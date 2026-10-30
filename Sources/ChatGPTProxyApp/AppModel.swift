@@ -77,10 +77,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    let monitor = AutoSwitchMonitor()
+
     @Published var proxyPort: Int {
         didSet {
             guard proxyPort != oldValue else { return }
             guard activeOperation == nil else { return }
+            if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
             phase = .idle
             proxyReachable = false
             egressLocation = nil
@@ -114,6 +117,13 @@ final class AppModel: ObservableObject {
         self.refreshAfterProfileConfiguration = refreshAfterProfileConfiguration
         let stored = defaults.integer(forKey: "proxyPort")
         proxyPort = stored > 0 ? stored : Int(ProxyConfiguration.defaultProxyPort)
+        if profileConfigurator == nil, let port = UInt16(exactly: proxyPort), port > 0 {
+            monitor.start(port: port)
+            Task {
+                do { try await restartRelay(upstreamPort: port) }
+                catch { phase = .failed(error.localizedDescription) }
+            }
+        }
     }
 
     var isBusy: Bool {

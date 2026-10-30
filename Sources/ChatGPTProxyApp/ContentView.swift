@@ -10,6 +10,7 @@ struct ContentView: View {
             header
             statusSection
             Divider()
+            MonitorStatusView(monitor: model.monitor)
             proxySection
             actionSection
         }
@@ -297,6 +298,23 @@ private struct SetupView: View {
                 Image(systemName: number == 1 ? "shippingbox" : number == 2 ? "network" : "doc.badge.arrow.up")
             }
             .help(title)
+        }
+    }
+}
+
+private struct MonitorStatusView: View {
+    @ObservedObject var monitor: AutoSwitchMonitor
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("后台监控").font(.headline)
+                Spacer()
+                Button(monitor.paused ? "恢复" : "暂停") { monitor.togglePaused() }
+            }
+            Text(monitor.status)
+            Text(monitor.currentNode).font(.caption).textSelection(.enabled)
+            if let latency = monitor.latency { Text("Google HEAD · \(latency)ms").monospacedDigit() }
+            Text(monitor.lastSwitch).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

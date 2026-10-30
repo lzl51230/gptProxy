@@ -14,6 +14,15 @@
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，统一安装包位于 `dist/ChatGPT-Proxy-2.0-Universal.pkg`。运行安装包会将 ChatGPT Proxy 和 ProxyBridge 一并安装到 `/Applications`。
+构建后的应用位于 `build/ChatGPT Proxy.app`，统一安装包位于 `dist/ChatGPT-Proxy-2.1-Universal.pkg`。运行安装包会将 ChatGPT Proxy 和 ProxyBridge 一并安装到 `/Applications`。
 
 本项目未配置 Apple Developer ID Application 或 Installer 证书，因此统一安装包未签名。在其他 Mac 上安装时，可通过 Finder 右键菜单打开，或在“隐私与安全性”设置中允许运行。构建过程会先验证上游 ProxyBridge 安装包，再提取其组件；安装后的 ProxyBridge 应用和系统扩展保留上游代码签名。
+
+
+后台监控与自动切换：
+- 打开应用即监控，关闭窗口后继续驻留菜单栏；菜单栏可暂停、恢复或退出，暂停状态会保存。
+- 每秒通过配置的本地代理向 https://www.google.com/ 发送 HEAD 请求，要求 HTTP 200；请求失败、超时或延迟超过 800ms 即测速。
+- 仅支持 Clash Party 全局模式。只在同订阅、同国家或地区内选择不超过 800ms 的最快节点；没有合格节点保持原选择。
+- 成功切换后冷却 5 秒，并关闭经过原节点与 GLOBAL 的旧连接，促使应用重连。
+- 无法确认节点来源或地区时不切换；规则／直连模式只监测、不自动切换。无需另开控制端口或登录自启。
+- 监控日志位于 ~/Library/Logs/ChatGPT Proxy/monitor.jsonl，超过 5MB 自动轮转。
