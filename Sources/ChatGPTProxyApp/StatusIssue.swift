@@ -60,7 +60,7 @@ enum StatusIssue: Identifiable, Equatable {
             if egressLocation == "CN" {
                 "代理已连接，但出口仍位于 CN。请在代理客户端切换到支持地区的节点。"
             } else {
-                "请确认代理客户端正在监听 127.0.0.1:\(port)，并检查这里填写的端口是否一致。"
+                "请确认代理客户端正在监听 127.0.0.1:\(port)，并检查“设置 → 代理”中的端口是否一致。"
             }
         }
     }

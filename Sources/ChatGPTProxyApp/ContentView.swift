@@ -12,7 +12,6 @@ struct ContentView: View {
             statusSection
             Divider()
             MonitorStatusView(monitor: model.monitor)
-            proxySection
             actionSection
         }
         .padding(28)
@@ -98,29 +97,6 @@ struct ContentView: View {
                     egressLocation: model.egressLocation
                 )
             )
-        }
-    }
-
-    private var proxySection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("代理端口")
-                .font(.headline)
-            HStack(spacing: 10) {
-                Text("127.0.0.1")
-                    .foregroundStyle(theme.secondary)
-                    .monospacedDigit()
-                Text(":")
-                    .foregroundStyle(theme.secondary.opacity(0.65))
-                TextField("7890", value: $model.proxyPort, format: .number.grouping(.never))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 110)
-                    .monospacedDigit()
-                    .disabled(model.isBusy)
-                Stepper("", value: $model.proxyPort, in: 1...65_535)
-                    .labelsHidden()
-                    .disabled(model.isBusy)
-                Spacer()
-            }
         }
     }
 
