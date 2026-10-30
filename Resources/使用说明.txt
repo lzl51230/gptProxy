@@ -9,7 +9,8 @@ ChatGPT Proxy 2.2.2
 分发 ZIP 不含 ChatGPT、ProxyBridge 或依赖安装包。修复需联网，使用配置的本地代理；失败可重试。修复不会自动启动或重启 GPT。
 
 启动器以当前用户托管 ProxyBridge 4.1.0 CLI；请勿同时打开 ProxyBridge 界面或另一个 CLI 实例。
-启动 GPT 时会为该应用设置 SOCKS5 启动参数，以代理端解析网页请求域名；不修改系统 DNS，保留本机和局域网直连。
+启动 GPT 时会为该应用设置 SOCKS5 启动参数，并为原生 Codex 子进程设置大小写 HTTP_PROXY、HTTPS_PROXY 和 ALL_PROXY，统一指向 socks5h://127.0.0.1:17890，让界面和原生后端均由代理端解析请求域名。大小写 NO_PROXY 保留本机和 192.168.0.0/16 直连，其他继承的环境变量保留；不修改系统 DNS 或用户的 Codex 配置。
+更新启动器后，请通过它重新启动 ChatGPT，以应用原生代理设置并解决 workspace routing discovery timed out。
 关闭窗口继续驻留；正常退出先停止 CLI 再停止本地中继。查看代理日志可定位启动错误。
 
 该工具不修改 macOS 系统代理。ProxyBridge 配置匹配 OpenAI 桌面相关 bundle、内置 Codex 后台程序及 Sparkle 更新器。其他路径下的同名 Codex 程序和其他应用的 Sparkle 更新器也会走代理；通用工具进程（curl、git、Python 等）不在匹配列表中。本机及 192.168.*.* 的 TCP 连接保留直连，其余匹配的 TCP/UDP 连接通过代理。

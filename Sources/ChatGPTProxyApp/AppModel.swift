@@ -415,6 +415,9 @@ final class AppModel: ObservableObject {
         configuration.activates = activates
         if url == Self.chatGPTURL {
             configuration.arguments = ChatGPTApplicationCompatibility.proxyLaunchArguments
+            configuration.environment = ChatGPTApplicationCompatibility.proxyLaunchEnvironment(
+                inheriting: ProcessInfo.processInfo.environment
+            )
         }
         do {
             _ = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
