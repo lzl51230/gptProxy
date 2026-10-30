@@ -50,12 +50,8 @@ enum StatusIssue: Identifiable, Equatable {
             "请运行应用随附的 ProxyBridge 安装包，完成安装后重新检测。"
         case .networkExtension:
             "请在系统设置的“网络扩展”中启用 ProxyBridge，完成后返回并重新检测。"
-        case let .dedicatedProfile(manualFallback):
-            if manualFallback {
-                "自动配置未能完成。请导出配置文件，并在 ProxyBridge 中手动导入和选中。"
-            } else {
-                "将自动安装应用内置的 ChatGPT Only 配置，并将它设为 ProxyBridge 当前 profile。"
-            }
+        case .dedicatedProfile:
+            "由启动器加载内置规则并运行 ProxyBridge CLI；无需导入或选中第三方 profile。失败时请查看代理日志。"
         case let .localProxy(port, egressLocation):
             if egressLocation == "CN" {
                 "代理已连接，但出口仍位于 CN。请在代理客户端切换到支持地区的节点。"
@@ -68,10 +64,10 @@ enum StatusIssue: Identifiable, Equatable {
     var actionTitle: String {
         switch self {
         case let .chatGPT(requiresUpdate): requiresUpdate ? "更新 ChatGPT" : "下载 ChatGPT"
-        case .proxyBridge: "打开安装包"
+        case .proxyBridge: "命令行安装／升级"
         case .networkExtension: "打开网络扩展设置"
         case let .dedicatedProfile(manualFallback):
-            manualFallback ? "导出配置文件" : "自动导入并启用"
+            manualFallback ? "启用代理" : "启用代理"
         case .localProxy: "重新检测"
         }
     }
@@ -82,7 +78,7 @@ enum StatusIssue: Identifiable, Equatable {
         case .proxyBridge: .installProxyBridge
         case .networkExtension: .openNetworkExtensionSettings
         case let .dedicatedProfile(manualFallback):
-            manualFallback ? .revealProfile : .installProfile
+            manualFallback ? .installProfile : .installProfile
         case .localProxy: .refreshStatus
         }
     }

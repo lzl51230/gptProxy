@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
 APP_DIR="$PROJECT_DIR/build/ChatGPT Proxy.app"
 PROFILE="$PROJECT_DIR/Resources/ChatGPT-Only.pbprofile"
-INSTALLER="$PROJECT_DIR/Resources/ProxyBridge-v4.0.0-Universal-Installer.pkg"
+INSTALLER="$PROJECT_DIR/Resources/ProxyBridge-v4.1.0-Universal-Installer.pkg"
 INFO_PLIST="$PROJECT_DIR/Resources/Info.plist"
 PROXYBRIDGE_IDENTIFIER=com.interceptsuite.ProxyBridge
 PRODUCT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
@@ -33,7 +33,7 @@ ARCHITECTURES=$(/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/ChatGPTProxyLaunch
     .proxyConfigs[0].port == 17890 and
     .proxyConfigs[0].type == "socks5" and
     (.proxyRules | length) == 2 and
-    all(.proxyRules[]; .processNames == "com.openai.*;com.openai.chat;ChatGPT") and
+    all(.proxyRules[]; .processNames == "com.openai.*;com.openai.chat;ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*") and
     ([.proxyRules[] | select(.localId == "chatgpt-local-direct")] | length) == 1 and
     (.proxyRules[] | select(.localId == "chatgpt-local-direct") |
         .enabled == true and
@@ -109,7 +109,13 @@ PROXYBRIDGE_PAYLOAD_EXTENSION="$PROXYBRIDGE_PAYLOAD_APP/Contents/Library/SystemE
 ' "$CHOICES_JSON" >/dev/null
 
 [[ ! -e "$LAUNCHER_COMPONENT/Scripts" ]]
-[[ ! -e "$PROXYBRIDGE_COMPONENT/Scripts" ]]
+[[ -f "$PROXYBRIDGE_COMPONENT/Scripts/postinstall" ]]
+[[ "$(/bin/ls -A "$PROXYBRIDGE_COMPONENT/Scripts" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == "1" ]]
+OFFICIAL_EXPANDED="$VERIFY_ROOT/official"
+/usr/sbin/pkgutil --expand-full "$INSTALLER" "$OFFICIAL_EXPANDED"
+OFFICIAL_SCRIPT=$(/usr/bin/find "$OFFICIAL_EXPANDED" -path '*/Scripts/postinstall' -type f -print -quit)
+/usr/bin/cmp "$OFFICIAL_SCRIPT" "$PROXYBRIDGE_COMPONENT/Scripts/postinstall"
+[[ -x "$PROJECT_DIR/dist/install.sh" ]]
 [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$LAUNCHER_COMPONENT/PackageInfo")" == "$LAUNCHER_IDENTIFIER" ]]
 [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$LAUNCHER_COMPONENT/PackageInfo")" == "/Applications" ]]
 [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$PROXYBRIDGE_COMPONENT/PackageInfo")" == "$PROXYBRIDGE_IDENTIFIER" ]]
@@ -122,7 +128,7 @@ PROXYBRIDGE_VERSION=$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$PR
 [[ -d "$LAUNCHER_PAYLOAD_APP" ]]
 [[ -d "$PROXYBRIDGE_PAYLOAD_APP" ]]
 [[ -d "$PROXYBRIDGE_PAYLOAD_EXTENSION" ]]
-"$PROJECT_DIR/scripts/validate-proxybridge-installer.sh" "$LAUNCHER_PAYLOAD_APP/Contents/Resources/ProxyBridge-v4.0.0-Universal-Installer.pkg"
+"$PROJECT_DIR/scripts/validate-proxybridge-installer.sh" "$LAUNCHER_PAYLOAD_APP/Contents/Resources/ProxyBridge-v4.1.0-Universal-Installer.pkg"
 /usr/bin/codesign --verify --deep --strict "$PROXYBRIDGE_PAYLOAD_APP"
 /usr/bin/codesign --verify --strict "$PROXYBRIDGE_PAYLOAD_EXTENSION"
 

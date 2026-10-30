@@ -23,6 +23,12 @@ final class RelayLifecycle {
         self.makeRelay = makeRelay
     }
 
+    func stopAndWait() async {
+        if let pending = startup { _ = try? await pending.task.value }
+        if let relay { await relay.instance.stopAndWait() }
+        relay = nil
+    }
+
     func ensureRunning(upstreamPort: UInt16) async throws {
         while let pending = startup {
             if pending.upstreamPort == upstreamPort {

@@ -1,9 +1,9 @@
 # Third-Party Notices
 
-This distribution includes the official ProxyBridge 4.0.0 universal installer.
+This distribution includes the official ProxyBridge 4.1.0 universal installer.
 
 - Project: https://github.com/InterceptSuite/ProxyBridge
-- Installer SHA-256: `df64a77b9bd1a6f9d41b4c7e2169dbf86c23441c6751b65a0a55c016a6253d0a`
+- Installer SHA-256: `c375fff53349f009e7bedacb47528642041776f859f58972bfad02b190ef7dec`
 - License: MIT
 
 ## MIT License

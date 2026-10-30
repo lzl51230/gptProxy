@@ -1,20 +1,15 @@
 import Foundation
 
-public enum ProxyBridgeConfigurationChecker {
-    public static let preferencesURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(
-            "Library/Containers/com.interceptsuite.ProxyBridge/Data/Library/Preferences/com.interceptsuite.ProxyBridge.plist"
-        )
-
-    public static func isChatGPTOnlyProfileActive(at url: URL = preferencesURL) async -> Bool {
-        await Task.detached(priority: .utility) {
-            guard let data = try? Data(contentsOf: url) else { return false }
-            return ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: data)
-        }.value
-    }
-}
-
 public enum ProxyBridgeConfigurationParser {
+    public static func isBundledProfileValid(_ data: Data) -> Bool {
+        guard let profile = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              profile["name"] as? String == "ChatGPT Only",
+              let configs = profile["proxyConfigs"],
+              let encoded = try? JSONSerialization.data(withJSONObject: configs)
+        else { return false }
+        return matchesExpected(configs: encoded, rules: profile["proxyRules"])
+    }
+
     public static func isChatGPTOnlyProfileActive(in propertyListData: Data) -> Bool {
         guard
             let propertyList = try? PropertyListSerialization.propertyList(from: propertyListData, format: nil),

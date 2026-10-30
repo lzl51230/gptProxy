@@ -125,11 +125,13 @@ struct ContentView: View {
                 Button("首次配置") {
                     model.showingSetup = true
                 }
-                Button("打开 ProxyBridge") {
+                Button("查看代理日志") {
                     model.openProxyBridge()
                 }
                 Spacer()
                 if model.isBusy {
+                    Button("网络扩展设置") { model.openNetworkExtensionSettings() }
+                    Button("取消启用") { Task { await model.cancelProxyStartup() } }
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -341,11 +343,11 @@ private struct SetupView: View {
             setupRow(number: 1, title: "安装 ProxyBridge") {
                 model.openBundledProxyBridgeInstaller()
             }
-            setupRow(number: 2, title: "打开并允许网络扩展") {
-                model.openProxyBridge()
+            setupRow(number: 2, title: "允许网络扩展") {
+                model.openNetworkExtensionSettings()
             }
-            setupRow(number: 3, title: "导出 ProxyBridge 专用配置") {
-                model.revealBundledProfile()
+            setupRow(number: 3, title: "启用代理") {
+                Task { await model.installAndActivateBundledProfile() }
             }
 
             if !model.chatGPTInstalled {

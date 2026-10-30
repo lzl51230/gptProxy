@@ -11,8 +11,8 @@ PROXYBRIDGE_EXPANDED_DIR="$PACKAGE_WORK_DIR/proxybridge-expanded"
 PROXYBRIDGE_SNAPSHOT_DIR="$PACKAGE_WORK_DIR/private"
 DISTRIBUTION_TEMPLATE="$PROJECT_DIR/Resources/Installer/Distribution.xml"
 DISTRIBUTION_PATH="$PACKAGE_WORK_DIR/Distribution.xml"
-PROXYBRIDGE_INSTALLER="$PROJECT_DIR/Resources/ProxyBridge-v4.0.0-Universal-Installer.pkg"
-PROXYBRIDGE_SNAPSHOT="$PROXYBRIDGE_SNAPSHOT_DIR/ProxyBridge-v4.0.0-Universal-Installer.pkg"
+PROXYBRIDGE_INSTALLER="$PROJECT_DIR/Resources/ProxyBridge-v4.1.0-Universal-Installer.pkg"
+PROXYBRIDGE_SNAPSHOT="$PROXYBRIDGE_SNAPSHOT_DIR/ProxyBridge-v4.1.0-Universal-Installer.pkg"
 INFO_PLIST="$PROJECT_DIR/Resources/Info.plist"
 PROXYBRIDGE_IDENTIFIER=com.interceptsuite.ProxyBridge
 PRODUCT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
@@ -91,4 +91,5 @@ STAGED_PRODUCT_PKG="$PRODUCT_STAGE_DIR/${PRODUCT_PKG:t}"
 /bin/mv -f "$STAGED_PRODUCT_PKG" "$PRODUCT_PKG"
 /bin/rm -f "$LEGACY_DMG"
 
+/bin/cp "$PROJECT_DIR/scripts/install.sh" "$DIST_DIR/install.sh"
 print "$PRODUCT_PKG"

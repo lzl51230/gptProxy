@@ -43,11 +43,11 @@ final class ProxyBridgeConfigurationTests: XCTestCase {
         XCTAssertFalse(ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: data))
     }
 
-    func testExpectedRulesRouteOpenAIBundlesAndLegacyChatGPT() {
+    func testExpectedRulesIncludeOpenAICodexAndSparkleProcesses() {
         for rule in expectedRules {
             XCTAssertEqual(
                 rule["processNames"] as? String,
-                "com.openai.*;com.openai.chat;ChatGPT"
+                "com.openai.*;com.openai.chat;ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*"
             )
         }
     }
@@ -61,6 +61,32 @@ final class ProxyBridgeConfigurationTests: XCTestCase {
         let data = try makePreferences(rules: narrowRules)
 
         XCTAssertFalse(ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: data))
+    }
+
+    func testRejectsPreviousProcessCoverageInLiveRulesOrProfileSnapshot() throws {
+        let previousRules = expectedRules.map { rule in
+            var previousRule = rule
+            previousRule["processNames"] = "com.openai.*;com.openai.chat;ChatGPT"
+            return previousRule
+        }
+
+        for data in [
+            try makePreferences(rules: previousRules, snapshotRules: expectedRules),
+            try makePreferences(snapshotRules: previousRules),
+        ] {
+            XCTAssertFalse(ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: data))
+        }
+    }
+
+    func testRejectsLocalDirectRuleThatWouldBypassUDPProxying() throws {
+        var rules = expectedRules
+        rules[0]["protocol"] = "BOTH"
+
+        XCTAssertFalse(
+            ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(
+                in: try makePreferences(rules: rules)
+            )
+        )
     }
 
     func testRejectsProxyWithCredentials() throws {
@@ -123,7 +149,7 @@ final class ProxyBridgeConfigurationTests: XCTestCase {
             [
                 "localId": "chatgpt-local-direct",
                 "name": "ChatGPT Local Direct",
-                "processNames": "com.openai.*;com.openai.chat;ChatGPT",
+                "processNames": "com.openai.*;com.openai.chat;ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*",
                 "targetHosts": "localhost;127.0.0.1;::1;192.168.*.*;192.168.100.81",
                 "targetPorts": "*",
                 "protocol": "TCP",
@@ -133,7 +159,7 @@ final class ProxyBridgeConfigurationTests: XCTestCase {
             [
                 "localId": "chatgpt-only-proxy",
                 "name": "ChatGPT Proxy",
-                "processNames": "com.openai.*;com.openai.chat;ChatGPT",
+                "processNames": "com.openai.*;com.openai.chat;ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*",
                 "targetHosts": "*",
                 "targetPorts": "*",
                 "protocol": "BOTH",

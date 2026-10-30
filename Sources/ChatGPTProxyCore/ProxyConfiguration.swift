@@ -35,7 +35,13 @@ public enum ChatGPTApplicationStatus: Equatable {
 public enum ChatGPTApplicationCompatibility {
     public static let supportedBundleIdentifier = "com.openai.codex"
     public static let legacyBundleIdentifier = "com.openai.chat"
-    public static let proxyBridgeProcessNames = "com.openai.*;\(legacyBundleIdentifier);ChatGPT"
+    public static let proxyBridgeProcessNames = "com.openai.*;\(legacyBundleIdentifier);ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*"
+    // Chromium SOCKS5 resolves HTTP(S)/WebSocket destinations at the proxy.
+    // Keep the same local TCP exceptions as the transparent proxy profile.
+    public static let proxyLaunchArguments = [
+        "--proxy-server=socks5://127.0.0.1:\(ProxyConfiguration.relayPort)",
+        "--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16",
+    ]
     public static let runningBundleIdentifiers = [
         supportedBundleIdentifier,
         legacyBundleIdentifier,

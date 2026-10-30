@@ -7,7 +7,7 @@ final class StatusIssueTests: XCTestCase {
         XCTAssertEqual(StatusIssue.proxyBridge.action, .installProxyBridge)
         XCTAssertEqual(StatusIssue.networkExtension.action, .openNetworkExtensionSettings)
         XCTAssertEqual(StatusIssue.dedicatedProfile(manualFallback: false).action, .installProfile)
-        XCTAssertEqual(StatusIssue.dedicatedProfile(manualFallback: true).action, .revealProfile)
+        XCTAssertEqual(StatusIssue.dedicatedProfile(manualFallback: true).action, .installProfile)
         XCTAssertEqual(
             StatusIssue.localProxy(port: 7_890, egressLocation: nil).action,
             .refreshStatus
@@ -25,8 +25,8 @@ final class StatusIssueTests: XCTestCase {
     func testDedicatedProfileFallsBackToManualExportAfterAutomaticFailure() {
         let issue = StatusIssue.dedicatedProfile(manualFallback: true)
 
-        XCTAssertEqual(issue.actionTitle, "导出配置文件")
-        XCTAssertTrue(issue.message.contains("手动"))
+        XCTAssertEqual(issue.actionTitle, "启用代理")
+        XCTAssertTrue(issue.message.contains("CLI"))
     }
 
     func testLocalProxyIssueIncludesTheConfiguredPortWhenUnreachable() {

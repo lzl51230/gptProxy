@@ -1,14 +1,16 @@
-ChatGPT Proxy 2.2
+ChatGPT Proxy 2.2.1
 
 首次使用：
-1. 右键 ChatGPT-Proxy-2.2-Universal.pkg，选择“打开”并完成安装。安装器会同时安装 ChatGPT Proxy 和 ProxyBridge。
-2. 打开 ChatGPT Proxy，点击“首次配置”。
-3. 打开 ProxyBridge，并按 macOS 提示允许网络扩展。
-4. 回到启动器，使用“自动导入并启用”安装 ChatGPT Only 专用配置。
-5. 确认本机代理软件已启动。默认 SOCKS5/mixed 端口为 7890。
-6. 点击“启动 ChatGPT”。
+1. 在终端执行：./install.sh ./ChatGPT-Proxy-2.2.1-Universal.pkg，并完成 sudo 认证。
+2. 打开 ChatGPT Proxy，确认本机代理软件已运行（默认端口 7890）。
+3. 点击“启用代理”，按 macOS 提示允许网络扩展。无需打开 ProxyBridge 窗口或导入 profile。
+4. 就绪后点击“启动 ChatGPT”。
 
-该工具不修改 macOS 系统代理。ProxyBridge 配置匹配 OpenAI 官方桌面相关 bundle；其他应用保持直连。
+启动器以当前用户托管 ProxyBridge 4.1.0 CLI；请勿同时打开 ProxyBridge 界面或另一个 CLI 实例。
+启动 GPT 时会为该应用设置 SOCKS5 启动参数，以代理端解析网页请求域名；不修改系统 DNS，保留本机和局域网直连。
+关闭窗口继续驻留；正常退出先停止 CLI 再停止本地中继。查看代理日志可定位启动错误。
+
+该工具不修改 macOS 系统代理。ProxyBridge 配置匹配 OpenAI 桌面相关 bundle、内置 Codex 后台程序及 Sparkle 更新器。其他路径下的同名 Codex 程序和其他应用的 Sparkle 更新器也会走代理；通用工具进程（curl、git、Python 等）不在匹配列表中。本机及 192.168.*.* 的 TCP 连接保留直连，其余匹配的 TCP/UDP 连接通过代理。
 
 主窗口中的“打开 .codex”可打开当前用户的 Codex 配置目录；目录不存在时会自动创建。
 

@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-EXPECTED_SHA256=df64a77b9bd1a6f9d41b4c7e2169dbf86c23441c6751b65a0a55c016a6253d0a
+EXPECTED_SHA256=c375fff53349f009e7bedacb47528642041776f859f58972bfad02b190ef7dec
 SOURCE_INSTALLER=${1:?Usage: validate-proxybridge-installer.sh source.pkg [snapshot.pkg]}
 VALIDATED_INSTALLER=${2:-$SOURCE_INSTALLER}
 
