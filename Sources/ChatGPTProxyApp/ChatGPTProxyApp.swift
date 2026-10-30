@@ -59,10 +59,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct ChatGPTProxyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    private let menuBarIcon: NSImage = {
+        let icon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+            .flatMap { NSImage(contentsOf: $0) }
+            ?? NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+        icon.size = NSSize(width: 18, height: 18)
+        icon.isTemplate = false
+        return icon
+    }()
 
     var body: some Scene {
-        MenuBarExtra("ChatGPT Proxy", systemImage: "network") {
+        MenuBarExtra {
             MonitorMenu(monitor: delegate.model.monitor, showMainWindow: delegate.showMainWindow)
+        } label: {
+            Image(nsImage: menuBarIcon)
+                .renderingMode(.original)
+                .accessibilityLabel("ChatGPT Proxy")
         }
         Settings {
             SettingsView(model: delegate.model, login: delegate.login)
