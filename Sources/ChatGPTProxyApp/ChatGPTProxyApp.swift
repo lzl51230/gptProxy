@@ -66,10 +66,11 @@ struct ChatGPTProxyApp: App {
         }
         Settings {
             SettingsView(model: delegate.model, login: delegate.login)
-                .frame(width: 440)
                 .padding(20)
                 .appTheme()
+                .frame(width: 480, height: 680)
         }
+        .windowResizability(.contentSize)
     }
 }
 

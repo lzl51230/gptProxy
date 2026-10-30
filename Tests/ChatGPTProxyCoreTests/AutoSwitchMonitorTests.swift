@@ -37,13 +37,19 @@ private actor MonitorFixture {
 
 @MainActor
 final class AutoSwitchMonitorTests: XCTestCase {
+    private let defaultsSuite = "AutoSwitchMonitorTests.\(UUID().uuidString)"
+    private lazy var defaults = UserDefaults(suiteName: defaultsSuite)!
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        super.tearDown()
+    }
     private func monitor(_ fixture: MonitorFixture, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) -> AutoSwitchMonitor {
         AutoSwitchMonitor(operations: .init(
             snapshot: { _ in try await fixture.snapshot() }, probe: { _ in await fixture.probe() },
             resolver: { NodeOriginResolver(origins: ["日本旧": "one", "日本快": "one", "香港快": "one", "日本另一订阅": "two"]) },
             delay: { _, name in await fixture.delay(name) }, select: { _, name in await fixture.select(name) },
             connections: { _, _ in ["old-connection"] }, close: { _, id in await fixture.close(id) }, now: now
-        ))
+        ), defaults: defaults)
     }
 
     func testSlowProbeSwitchesOnlyWithinSubscriptionAndRegionAndClosesOldConnections() async {
@@ -145,10 +151,10 @@ extension AutoSwitchMonitorTests {
             delay: { _, name in await f.delay(name) }, select: { _, name in await f.select(name) },
             connections: { _, _ in [] }, close: { _, _ in }
         )
-        let m = AutoSwitchMonitor(operations: ops); await m.tick()
+        let m = AutoSwitchMonitor(operations: ops, defaults: defaults); await m.tick()
         let selected = await f.selected; XCTAssertEqual(selected, ["日本快"])
         ops.resolver = { NodeOriginResolver(origins: [:]) }
-        let unknown = AutoSwitchMonitor(operations: ops); await unknown.tick()
+        let unknown = AutoSwitchMonitor(operations: ops, defaults: defaults); await unknown.tick()
         let after = await f.selected; XCTAssertEqual(after.count, 1)
     }
 }
@@ -204,7 +210,7 @@ extension AutoSwitchMonitorTests {
             resolver: { NodeOriginResolver(origins: ["日本旧": "one", "日本快": "one"]) },
             delay: { _, name in await f.delay(name) }, select: { _, name in await f.select(name) },
             connections: { _, _ in [] }, close: { _, _ in }
-        ))
+        ), defaults: defaults)
         let task = Task { await m.tick() }
         try await Task.sleep(for: .milliseconds(20)); task.cancel(); await task.value
         let selected = await f.selected; let tested = await f.tested
@@ -218,7 +224,7 @@ extension AutoSwitchMonitorTests {
             resolver: { NodeOriginResolver(origins: ["日本旧": "one", "日本快": "one"]) },
             delay: { _, name in await f.delay(name) }, select: { _, _ in throw MonitorError.message("failed") },
             connections: { _, _ in [] }, close: { _, _ in }
-        ))
+        ), defaults: defaults)
         await m.tick(); await m.tick()
         let tested = await f.tested; XCTAssertEqual(tested.count, 4)
     }

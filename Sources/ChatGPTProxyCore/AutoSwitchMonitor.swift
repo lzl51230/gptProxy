@@ -23,6 +23,15 @@ struct AutoSwitchOperations: Sendable {
     )
 }
 
+public struct MonitorRegionPreference: Codable, Equatable, Sendable, Identifiable {
+    public let code: String
+    public var isEnabled: Bool
+    public var id: String { code }
+    public var name: String {
+        Locale(identifier: "zh_CN").localizedString(forRegionCode: code) ?? code
+    }
+}
+
 @MainActor
 public final class AutoSwitchMonitor: ObservableObject {
     @Published public private(set) var status = "等待监控"
@@ -30,6 +39,14 @@ public final class AutoSwitchMonitor: ObservableObject {
     @Published public private(set) var latency: Int?
     @Published public private(set) var lastSwitch = "尚未切换"
     @Published public private(set) var paused: Bool
+    @Published public private(set) var regions: [MonitorRegionPreference]
+    @Published public private(set) var regionNodeCounts: [String: Int] = [:]
+    @Published public private(set) var regionCatalogStatus: String?
+    @Published public private(set) var isRefreshingRegions = false
+    private let defaults: UserDefaults
+    private static let regionsKey = "monitorRegionPreferences"
+    private var preferenceRevision = 0
+    private var lifecycleRevision = 0
     private var task: Task<Void, Never>?
     private var port: UInt16 = 7890
     private let operations: AutoSwitchOperations
@@ -42,10 +59,81 @@ public final class AutoSwitchMonitor: ObservableObject {
 
     public convenience init() { self.init(operations: .live, writesLog: true) }
 
-    init(operations: AutoSwitchOperations, writesLog: Bool = false) {
+    init(operations: AutoSwitchOperations, writesLog: Bool = false, defaults: UserDefaults = .standard) {
         self.writesLog = writesLog
         self.operations = operations
-        paused = UserDefaults.standard.bool(forKey: "monitorPaused")
+        self.defaults = defaults
+        paused = defaults.bool(forKey: "monitorPaused")
+        let saved = defaults.data(forKey: Self.regionsKey)
+            .flatMap { try? JSONDecoder().decode([MonitorRegionPreference].self, from: $0) } ?? []
+        var seen = Set<String>()
+        regions = saved.filter { seen.insert($0.code).inserted }
+    }
+
+    public func setRegionEnabled(_ code: String, enabled: Bool) {
+        guard let index = regions.firstIndex(where: { $0.code == code }), regions[index].isEnabled != enabled else { return }
+        regions[index].isEnabled = enabled
+        preferenceRevision += 1
+        saveRegions()
+    }
+
+    public func moveRegion(_ code: String, offset: Int) {
+        guard offset == -1 || offset == 1,
+              let index = regions.firstIndex(where: { $0.code == code }),
+              regions.indices.contains(index + offset) else { return }
+        regions.swapAt(index, index + offset)
+        preferenceRevision += 1
+        saveRegions()
+    }
+
+    private func saveRegions() {
+        if let data = try? JSONEncoder().encode(regions) { defaults.set(data, forKey: Self.regionsKey) }
+    }
+
+    private func candidatesByRegion(_ snapshot: ClashSnapshot, resolver: NodeOriginResolver) throws -> [String: [String]] {
+        guard let current = snapshot.current, let source = resolver.origins[current],
+              NodeOriginResolver.region(current) != nil else {
+            throw MonitorError.message("节点订阅或地区不明确，保持原节点")
+        }
+        let excluded = Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"])
+        var result: [String: [String]] = [:]
+        for name in Set(snapshot.proxies["GLOBAL"]?.all ?? []).sorted() {
+            guard let proxy = snapshot.proxies[name], proxy.all == nil,
+                  !excluded.contains(proxy.type.uppercased()), resolver.origins[name] == source,
+                  let region = NodeOriginResolver.region(name) else { continue }
+            result[region, default: []].append(name)
+        }
+        return result
+    }
+
+    private func updateRegionCatalog(_ candidates: [String: [String]]) {
+        regionNodeCounts = candidates.mapValues(\.count)
+        let known = Set(regions.map(\.code))
+        let additions = candidates.keys.filter { !known.contains($0) }.sorted()
+        if !additions.isEmpty {
+            regions += additions.map { MonitorRegionPreference(code: $0, isEnabled: false) }
+            saveRegions()
+        }
+        regionCatalogStatus = nil
+    }
+
+    public func refreshRegions() async {
+        guard !isRefreshingRegions else { return }
+        isRefreshingRegions = true
+        defer { isRefreshingRegions = false }
+        let refreshPort = port
+        do {
+            let snapshot = try await operations.snapshot(refreshPort)
+            let resolver = try await operations.resolver()
+            try Task.checkCancellation()
+            guard port == refreshPort else { return }
+            updateRegionCatalog(try candidatesByRegion(snapshot, resolver: resolver))
+        } catch is CancellationError { }
+        catch {
+            guard port == refreshPort else { return }
+            regionNodeCounts = [:]
+            regionCatalogStatus = error.localizedDescription
+        }
     }
 
     public func start(port: UInt16) {
@@ -64,13 +152,14 @@ public final class AutoSwitchMonitor: ObservableObject {
     }
 
     public func stop() {
+        lifecycleRevision += 1
         task?.cancel(); task = nil
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
     }
 
     public func togglePaused() {
         paused.toggle()
-        UserDefaults.standard.set(paused, forKey: "monitorPaused")
+        defaults.set(paused, forKey: "monitorPaused")
         start(port: port)
         record("pause", ["paused": String(paused)])
     }
@@ -125,42 +214,63 @@ public final class AutoSwitchMonitor: ObservableObject {
         }
     }
 
+    private func recoveryIsCurrent(_ revision: Int, lifecycle: Int) -> Bool {
+        guard lifecycle == lifecycleRevision else { return false }
+        guard revision == preferenceRevision else {
+            status = "地区设置已变化，放弃本轮切换"
+            return false
+        }
+        return true
+    }
+
     private func recover(_ original: ClashSnapshot) async throws {
         guard let current = original.current else { status = "无法解析当前节点"; return }
         let resolver = try await operations.resolver()
         try Task.checkCancellation()
-        guard let source = resolver.origins[current], let region = NodeOriginResolver.region(current) else {
-            status = "节点订阅或地区不明确，保持原节点"; return
-        }
-        let excluded = Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"])
-        let candidates = (original.proxies["GLOBAL"]?.all ?? []).filter {
-            guard let proxy = original.proxies[$0], proxy.all == nil, !excluded.contains(proxy.type.uppercased()) else { return false }
-            return resolver.origins[$0] == source && NodeOriginResolver.region($0) == region
-        }.sorted()
-        status = "正在测速 \(region) · \(candidates.count) 个节点"
-        record("testing", ["node": current, "region": region, "count": String(candidates.count)])
+        let candidates = try candidatesByRegion(original, resolver: resolver)
+        updateRegionCatalog(candidates)
+        guard let region = NodeOriginResolver.region(current) else { return }
+        let revision = preferenceRevision
+        let lifecycle = lifecycleRevision
+        let order = [region] + regions.filter { $0.isEnabled && $0.code != region }.map(\.code)
         var delays: [String: Int] = [:]
-        // Bounded batches keep repeated failures from spawning unbounded processes.
-        for offset in stride(from: 0, to: candidates.count, by: 4) {
-            try Task.checkCancellation()
-            let batch = Array(candidates[offset..<min(offset + 4, candidates.count)])
-            let results = await withTaskGroup(of: (String, Int?).self) { group in
-                for name in batch {
-                    let delayOperation = self.operations.delay
-                    group.addTask { (name, try? await delayOperation(original.socket, name)) }
+        var winner: String?
+        for targetRegion in order {
+            let nodes = candidates[targetRegion] ?? []
+            status = "正在测速 \(targetRegion) · \(nodes.count) 个节点"
+            record("testing", ["node": current, "region": targetRegion, "count": String(nodes.count)])
+            // Bound concurrency within each region; finish a region before trying the next.
+            for offset in stride(from: 0, to: nodes.count, by: 4) {
+                try Task.checkCancellation()
+                let batch = Array(nodes[offset..<min(offset + 4, nodes.count)])
+                let results = await withTaskGroup(of: (String, Int?).self) { group in
+                    for name in batch {
+                        let delayOperation = self.operations.delay
+                        group.addTask { (name, try? await delayOperation(original.socket, name)) }
+                    }
+                    var values: [(String, Int?)] = []
+                    for await value in group { values.append(value) }
+                    return values
                 }
-                var values: [(String, Int?)] = []
-                for await value in group { values.append(value) }
-                return values
+                try Task.checkCancellation()
+                guard recoveryIsCurrent(revision, lifecycle: lifecycle) else { return }
+                for (name, delay) in results {
+                    if let delay { delays[name] = delay }
+                    record("nodeTest", ["node": name, "region": targetRegion, "delay": delay.map(String.init) ?? "failed"])
+                }
             }
-            for (name, delay) in results {
-                if let delay { delays[name] = delay }
-                record("nodeTest", ["node": name, "delay": delay.map(String.init) ?? "failed"])
+            if let best = AutoSwitchPolicy.winner(delays, current: current) {
+                winner = best
+                break
             }
+            record("regionUnavailable", ["region": targetRegion])
         }
         try Task.checkCancellation()
-        guard let winner = AutoSwitchPolicy.winner(delays, current: current) else {
-            status = "同订阅同地区没有 ≤800ms 的节点，保持原节点"; return
+        guard recoveryIsCurrent(revision, lifecycle: lifecycle) else { return }
+        guard let winner else {
+            status = "当前地区及已勾选备用地区均无 ≤800ms 的节点，保持原节点"
+            record("allRegionsUnavailable", ["regions": order.joined(separator: ",")])
+            return
         }
         guard winner != current else { status = "当前节点已恢复且最快"; return }
         let latest = try await operations.snapshot(port)
@@ -173,6 +283,7 @@ public final class AutoSwitchMonitor: ObservableObject {
         }
         let ids = (try? await operations.connections(original.socket, current)) ?? []
         try Task.checkCancellation()
+        guard recoveryIsCurrent(revision, lifecycle: lifecycle) else { return }
         try await operations.select(original.socket, winner)
         // A successful PUT is already a change. Start cooldown even if readback fails,
         // avoiding a second PUT when the controller drops its response.
@@ -183,7 +294,7 @@ public final class AutoSwitchMonitor: ObservableObject {
         currentNode = winner
         lastSwitch = "\(current) → \(winner)（\(delays[winner]!)ms）"
         status = "切换成功，冷却 5 秒"
-        record("switched", ["from": current, "to": winner, "delay": String(delays[winner]!)])
+        record("switched", ["from": current, "to": winner, "fromRegion": region, "toRegion": NodeOriginResolver.region(winner) ?? "", "delay": String(delays[winner]!)])
         for id in ids {
             try Task.checkCancellation()
             do { try await operations.close(original.socket, id) }

@@ -237,43 +237,108 @@ struct SettingsView: View {
     @AppStorage(AppTheme.storageKey) private var theme: AppTheme = .system
 
     var body: some View {
-        Form {
-            Section("外观") {
-                Picker("颜色主题", selection: $theme) {
-                    ForEach(AppTheme.allCases) { theme in
-                        Text(theme.title).tag(theme)
+        ScrollView {
+            Form {
+                Section("外观") {
+                    Picker("颜色主题", selection: $theme) {
+                        ForEach(AppTheme.allCases) { theme in
+                            Text(theme.title).tag(theme)
+                        }
                     }
+                    .pickerStyle(.radioGroup)
+                    Text("配色参考 VS Code。选择后立即应用，并在下次启动时保留。")
+                        .font(.caption).foregroundStyle(theme.secondary)
                 }
-                .pickerStyle(.radioGroup)
-                Text("配色参考 VS Code。选择后立即应用，并在下次启动时保留。")
-                    .font(.caption).foregroundStyle(theme.secondary)
-            }
-            Section("启动") {
-                Toggle("开机自启动", isOn: Binding(
-                    get: { login.isEnabled },
-                    set: { enabled in Task { await login.setEnabled(enabled) } }
-                ))
-                .toggleStyle(.switch)
-                .disabled(login.isWorking)
-                Text("登录 macOS 后在菜单栏运行，不自动打开主窗口。")
-                    .font(.caption).foregroundStyle(theme.secondary)
-                Text(login.statusText).font(.caption)
-                if let error = login.errorMessage {
-                    Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                Section("启动") {
+                    Toggle("开机自启动", isOn: Binding(
+                        get: { login.isEnabled },
+                        set: { enabled in Task { await login.setEnabled(enabled) } }
+                    ))
+                    .toggleStyle(.switch)
+                    .disabled(login.isWorking)
+                    Text("登录 macOS 后在菜单栏运行，不自动打开主窗口。")
+                        .font(.caption).foregroundStyle(theme.secondary)
+                    Text(login.statusText).font(.caption)
+                    if let error = login.errorMessage {
+                        Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                    }
+                    Button("打开登录项与扩展") { login.openSystemSettings() }
                 }
-                Button("打开登录项与扩展") { login.openSystemSettings() }
-            }
-            Section("代理") {
-                TextField("代理端口", value: $model.proxyPort, format: .number.grouping(.never))
+                RegionSettingsView(monitor: model.monitor)
+                Section("代理") {
+                    TextField("代理端口", value: $model.proxyPort, format: .number.grouping(.never))
+                        .disabled(model.isBusy)
+                    Button("重新检测") {
+                        Task { await model.refreshStatus() }
+                    }
                     .disabled(model.isBusy)
-                Button("重新检测") {
-                    Task { await model.refreshStatus() }
                 }
-                .disabled(model.isBusy)
             }
         }
+        .frame(height: 640)
         .onAppear { login.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in login.refresh() }
+    }
+}
+
+private struct RegionSettingsView: View {
+    @Environment(\.selectedAppTheme) private var theme
+    @ObservedObject var monitor: AutoSwitchMonitor
+
+    var body: some View {
+        Section("Clash 备用地区") {
+            Text("当前地区始终优先测试；备用地区从上到下依次测试，选择首个可用地区的最快节点。未勾选时仅在当前地区内切换。")
+                .font(.caption).foregroundStyle(theme.secondary)
+            if monitor.regions.isEmpty {
+                Text("尚未发现地区，请连接 Clash Party 后刷新。")
+                    .font(.caption).foregroundStyle(theme.secondary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(Array(monitor.regions.enumerated()), id: \.element.id) { index, region in
+                            HStack {
+                                Toggle(region.name, isOn: Binding(
+                                    get: { region.isEnabled },
+                                    set: { monitor.setRegionEnabled(region.code, enabled: $0) }
+                                ))
+                                .toggleStyle(.checkbox)
+                                Spacer()
+                                Text(availability(region.code))
+                                    .font(.caption).foregroundStyle(theme.secondary)
+                                Button { monitor.moveRegion(region.code, offset: -1) } label: {
+                                    Image(systemName: "arrow.up")
+                                }
+                                .disabled(index == 0)
+                                .help("提高优先级")
+                                .accessibilityLabel("提高\(region.name)优先级")
+                                Button { monitor.moveRegion(region.code, offset: 1) } label: {
+                                    Image(systemName: "arrow.down")
+                                }
+                                .disabled(index == monitor.regions.count - 1)
+                                .help("降低优先级")
+                                .accessibilityLabel("降低\(region.name)优先级")
+                            }
+                        }
+                    }
+                    .padding(4)
+                }
+                .frame(height: min(CGFloat(monitor.regions.count) * 36 + 8, 220))
+            }
+            if let message = monitor.regionCatalogStatus {
+                Text(message).font(.caption).foregroundStyle(.orange)
+            }
+            Button(monitor.isRefreshingRegions ? "正在刷新…" : "刷新地区") {
+                Task { await monitor.refreshRegions() }
+            }
+            .disabled(monitor.isRefreshingRegions)
+        }
+        .task { await monitor.refreshRegions() }
+    }
+
+    private func availability(_ code: String) -> String {
+        if monitor.regionCatalogStatus != nil { return "未能确认节点" }
+        let count = monitor.regionNodeCounts[code, default: 0]
+        return count == 0 ? "当前无节点" : "\(count) 个节点"
     }
 }
 
