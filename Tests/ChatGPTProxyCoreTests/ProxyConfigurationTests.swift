@@ -25,6 +25,36 @@ final class ProxyConfigurationTests: XCTestCase {
         )
     }
 
+    func testNativeBackendUsesRelayWithRemoteDNSRegardlessOfInheritedProxySettings() {
+        let proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+        let inheritedProxies = Dictionary(uniqueKeysWithValues: proxyKeys.map {
+            ($0, "http://old-proxy.example:8080")
+        })
+
+        for inherited in [[:], inheritedProxies] {
+            var base = inherited
+            base["PATH"] = "/usr/bin:/bin"
+            base["CUSTOM_SETTING"] = "preserved"
+            let environment = ChatGPTApplicationCompatibility.proxyLaunchEnvironment(inheriting: base)
+
+            for key in proxyKeys {
+                XCTAssertEqual(environment[key], "socks5h://127.0.0.1:17890", key)
+            }
+            XCTAssertEqual(environment["PATH"], base["PATH"])
+            XCTAssertEqual(environment["CUSTOM_SETTING"], base["CUSTOM_SETTING"])
+        }
+    }
+
+    func testNativeProxyBypassesOnlyLocalDestinationsRegardlessOfInheritedNoProxy() {
+        for inherited in [[:], ["NO_PROXY": "*", "no_proxy": "chatgpt.com"]] {
+            let environment = ChatGPTApplicationCompatibility.proxyLaunchEnvironment(inheriting: inherited)
+
+            for key in ["NO_PROXY", "no_proxy"] {
+                XCTAssertEqual(environment[key], "localhost,127.0.0.1,::1,192.168.0.0/16", key)
+            }
+        }
+    }
+
     func testChatGPTApplicationCompatibilityRequiresTheCodexDesktopClient() {
         XCTAssertEqual(
             ChatGPTApplicationCompatibility.classify(

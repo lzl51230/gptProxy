@@ -4,6 +4,8 @@
 
 启动器不会修改 macOS 系统代理设置，而是在 `127.0.0.1:17890` 运行本地 TCP 中继。内置的 ProxyBridge 配置会匹配 `com.openai.*`、旧版 `com.openai.chat`、`ChatGPT`、`codex`、`codex-code-mode-host`、`codex_chronicle*` 和 `org.sparkle-project.*`，并将匹配的流量转发到中继。启动器托管 ProxyBridge 4.1.0 CLI，通过标准输入加载内置规则，确认规则完整生效后才允许启动 GPT。无需打开 ProxyBridge 窗口或修改其偏好文件。启动 GPT 时同时将其 Electron HTTP(S)/WebSocket 代理指向内部 SOCKS5 中继，让域名在代理端解析，避免本地 DNS 无回包导致界面离线；本机和 192.168.*.* 仍绕过该代理。首次运行需在 macOS 批准网络扩展；其他 CLI 实例须先自行停止。关闭窗口后继续驻留，正常退出时先停止 CLI 再关闭中继。
 
+启动器还会为 ChatGPT 及其原生 Codex 子进程设置大小写 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`，统一指向 `socks5h://127.0.0.1:17890`，让原生账户、工作区路由和模型请求也由代理端解析域名，避免 `workspace routing discovery timed out`。大小写 `NO_PROXY` 统一保留本机和 `192.168.0.0/16` 直连，其他继承的环境变量保留。更新启动器后，需通过它重新启动 ChatGPT 才会应用这些设置。
+
 启动器要求使用支持 Codex 的新版 ChatGPT 桌面客户端；检测到旧版 `com.openai.chat` 客户端时，会提示更新。
 
 规则也会代理其他路径下的同名 Codex 程序，以及其他应用的 Sparkle 更新器。`localhost`、`127.0.0.1`、`::1` 和 `192.168.*.*` 的 TCP 连接保留直连；其余匹配的 TCP/UDP 连接通过代理。通用工具进程（如 curl、git、Python）不在匹配列表中。
