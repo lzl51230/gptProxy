@@ -15,7 +15,7 @@ public struct ProxyBridgeCLIOutput: Sendable {
     public var isReady: Bool { versionMatches && profileApplied && redirecting && failure == nil }
     public init() {}
     public mutating func consume(_ line: String) {
-        if line == "ProxyBridge CLI 4.1.0" { versionMatches = true }
+        if line == "ProxyBridge CLI \(ProxyBridgeRelease.version)" { versionMatches = true }
         if line == "Profile \"ChatGPT Only\": 1 proxies, 2 rules applied" { profileApplied = true }
         if line == "Redirecting traffic. Press Ctrl+C to stop." { redirecting = true }
         if line.contains("waiting for your approval") { waitingForApproval = true }
@@ -27,7 +27,7 @@ public struct ProxyBridgeCLIOutput: Sendable {
 
 @MainActor
 public final class ProxyBridgeCLIController: ObservableObject {
-    nonisolated public static let supportedVersion = "4.1.0"
+    nonisolated public static let supportedVersion = ProxyBridgeRelease.version
     nonisolated public static let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/ChatGPT Proxy/proxybridge.log")
     @Published public private(set) var state: ProxyBridgeCLIState = .stopped

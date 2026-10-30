@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
         case ready
         case launching
         case configuringProfile
+        case repairing(String)
         case failed(String)
 
         var message: String {
@@ -25,6 +26,7 @@ final class AppModel: ObservableObject {
                 "正在启动 ChatGPT..."
             case .configuringProfile:
                 "正在配置 ProxyBridge..."
+            case let .repairing(message): message
             case let .failed(message):
                 message
             }
@@ -33,6 +35,8 @@ final class AppModel: ObservableObject {
 
     let monitor = AutoSwitchMonitor()
     let cli = ProxyBridgeCLIController()
+    let repairService = ProxyBridgeRepairService()
+    private var repairObservation: AnyCancellable?
     private var cliObservation: AnyCancellable?
 
 
@@ -49,6 +53,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var chatGPTStatus: ChatGPTApplicationStatus = .notInstalled
     @Published private(set) var proxyBridgeInstalled = false
+    @Published private(set) var proxyBridgeStatus: ProxyBridgeInstallationStatus = .missing
     @Published private(set) var extensionEnabled = false
     @Published private(set) var proxyBridgeProfileReady = false
     @Published private(set) var proxyReachable = false
@@ -82,6 +87,10 @@ final class AppModel: ObservableObject {
             case let .failed(message): self.phase = .failed(message)
             default: break
             }
+        }
+        repairObservation = repairService.$stage.sink { [weak self] stage in
+            guard stage != .idle else { return }
+            self?.phase = .repairing(stage.rawValue)
         }
         if profileConfigurator == nil, let port = UInt16(exactly: proxyPort), port > 0 {
             monitor.start(port: port)
@@ -118,6 +127,10 @@ final class AppModel: ObservableObject {
         updateInstalledApps()
         extensionEnabled = await SystemExtensionChecker.proxyBridgeIsEnabled()
         proxyBridgeProfileReady = cli.isReady
+        guard proxyBridgeInstalled else {
+            phase = .failed("ProxyBridge 需要修复：\(proxyBridgeStatus.detail)")
+            return
+        }
 
         do {
             let port = try validatedPort()
@@ -131,8 +144,6 @@ final class AppModel: ObservableObject {
                 phase = .failed(AppError.chatGPTUpdateRequired.localizedDescription)
             } else if !chatGPTInstalled {
                 phase = .failed(AppError.chatGPTMissing.localizedDescription)
-            } else if !proxyBridgeInstalled {
-                phase = .failed("请安装或升级至 ProxyBridge 4.1.0。")
             } else if !extensionEnabled {
                 phase = .failed("ProxyBridge 网络扩展尚未启用。")
             } else if !proxyBridgeProfileReady {
@@ -176,9 +187,17 @@ final class AppModel: ObservableObject {
         else { phase = .failed("尚无代理日志，请先启用代理。") }
     }
 
-    func cancelProxyStartup() async { await cli.stopAndWait() }
+    var canCancelOperation: Bool {
+        !repairService.isBusy || repairService.canCancel
+    }
+    func cancelProxyStartup() async {
+        if repairService.isBusy { repairService.cancel() }
+        if !repairService.isBusy || repairService.stage == .activating { await cli.stopAndWait() }
+    }
 
     func shutdown() async {
+        if repairService.stage == .activating { await cli.stopAndWait() }
+        await repairService.finishOrCancel()
         monitor.stop()
         await cli.stopAndWait()
         await relayLifecycle.stopAndWait()
@@ -206,27 +225,28 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(URL(string: "https://chatgpt.com/download/")!)
     }
 
-    func openBundledProxyBridgeInstaller() {
+    func repairProxyBridge() {
         Task {
-            guard let operation = beginOperation(phase: .configuringProfile) else { return }
+            guard let operation = beginOperation(phase: .repairing("正在检查 ProxyBridge…")) else { return }
             defer { endOperation(operation) }
             do {
-                await shutdown()
-                guard let url = Bundle.main.url(forResource: "ProxyBridge-v4.1.0-Universal-Installer", withExtension: "pkg") else { throw AppError.profileResourceMissing }
-                let result = await Task.detached {
-                    let process = Process()
-                    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                    process.arguments = ["-e", "on run argv\n do shell script (\"/usr/sbin/installer -pkg \" & quoted form of (item 1 of argv) & \" -target /\") with administrator privileges\nend run", url.path]
-                    process.standardOutput = FileHandle.nullDevice
-                    process.standardError = FileHandle.nullDevice
-                    do { try process.run(); process.waitUntilExit(); return process.terminationStatus == 0 }
-                    catch { return false }
-                }.value
-                phase = result ? .idle : .failed("命令行安装未完成，请重试并完成系统认证。")
-                if let port = UInt16(exactly: proxyPort) { monitor.start(port: port) }
+                let port = try validatedPort()
+                try await repairService.repair(proxyPort: port, beforeInstall: {
+                    await self.cli.stopAndWait()
+                    await self.relayLifecycle.stopAndWait()
+                }, activate: {
+                    try await self.configureBundledProxyBridgeProfile()
+                })
                 endOperation(operation)
-                if result { await refreshStatus() }
-            } catch { phase = .failed(error.localizedDescription) }
+                await refreshStatus()
+            } catch is CancellationError {
+                updateInstalledApps()
+                phase = .idle
+            } catch {
+                updateInstalledApps()
+                proxyBridgeProfileReady = cli.isReady
+                phase = .failed(error.localizedDescription)
+            }
         }
     }
 
@@ -276,20 +296,20 @@ final class AppModel: ObservableObject {
 
     private func updateInstalledApps() {
         chatGPTStatus = ChatGPTApplicationCompatibility.inspect(applicationURL: Self.chatGPTURL)
-        proxyBridgeInstalled = FileManager.default.fileExists(atPath: Self.proxyBridgeURL.path)
+        proxyBridgeStatus = .inspect(at: Self.proxyBridgeURL)
+        proxyBridgeInstalled = !proxyBridgeStatus.requiresRepair
     }
 
     private func configureBundledProxyBridgeProfile() async throws {
         updateInstalledApps()
-        guard proxyBridgeInstalled else { throw AppError.proxyBridgeMissing }
-        let installed = Bundle(url: Self.proxyBridgeURL)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        guard installed == ProxyBridgeCLIController.supportedVersion else { throw AppError.unsupportedProxyBridgeVersion(installed) }
+        guard proxyBridgeInstalled else { throw AppError.launchStepFailed("ProxyBridge 需要修复", proxyBridgeStatus.detail) }
         guard let url = Bundle.main.url(forResource: "ChatGPT-Only", withExtension: "pbprofile") else { throw AppError.profileResourceMissing }
         let profile: Data
         do { profile = try Data(contentsOf: url) }
         catch { throw AppError.launchStepFailed("读取内置规则", error.localizedDescription) }
         let port = try validatedPort()
         let health = try await ProxyHealthChecker.check(port: port)
+        try Task.checkCancellation()
         guard health.egressLocation != "CN" else { throw ProxyHealthError.unsupportedRegion(health.egressLocation) }
         try await ensureRelay(upstreamPort: port)
         // The upstream CLI distinguishes another CLI from its GUI and reports conflicts.
@@ -310,6 +330,7 @@ final class AppModel: ObservableObject {
             }
         }
         if !applications.isEmpty { try await Task.sleep(for: .milliseconds(500)) }
+        try Task.checkCancellation()
         try await cli.ensureRunning(profileData: profile)
         extensionEnabled = await SystemExtensionChecker.proxyBridgeIsEnabled()
         guard extensionEnabled else { await cli.stopAndWait(); throw AppError.extensionDisabled }
@@ -328,7 +349,7 @@ final class AppModel: ObservableObject {
             }
             throw AppError.chatGPTMissing
         }
-        guard proxyBridgeInstalled else { throw AppError.proxyBridgeMissing }
+        guard proxyBridgeInstalled else { throw AppError.launchStepFailed("ProxyBridge 需要修复", proxyBridgeStatus.detail) }
 
 
         let health = try await ProxyHealthChecker.check(port: port)

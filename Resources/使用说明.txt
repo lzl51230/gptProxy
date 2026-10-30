@@ -1,10 +1,12 @@
-ChatGPT Proxy 2.2.1
+ChatGPT Proxy 2.2.2
 
 首次使用：
-1. 在终端执行：./install.sh ./ChatGPT-Proxy-2.2.1-Universal.pkg，并完成 sudo 认证。
-2. 打开 ChatGPT Proxy，确认本机代理软件已运行（默认端口 7890）。
-3. 点击“启用代理”，按 macOS 提示允许网络扩展。无需打开 ProxyBridge 窗口或导入 profile。
-4. 就绪后点击“启动 ChatGPT”。
+1. 解压 ChatGPT-Proxy-2.2.2-Universal.zip，将 ChatGPT Proxy.app 放入应用程序目录。
+2. 打开 ChatGPT Proxy，确认本地 SOCKS5 代理已运行，并在设置中填写端口（默认 7890）。
+3. ProxyBridge 缺失、损坏或版本不匹配时点击状态行“修复”。应用在线下载官方 4.1.0 安装包，校验后通过命令行安装；按系统提示完成管理员认证。
+4. 按 macOS 提示允许网络扩展；代理就绪后点击“启动 ChatGPT”。
+
+分发 ZIP 不含 ChatGPT、ProxyBridge 或依赖安装包。修复需联网，使用配置的本地代理；失败可重试。修复不会自动启动或重启 GPT。
 
 启动器以当前用户托管 ProxyBridge 4.1.0 CLI；请勿同时打开 ProxyBridge 界面或另一个 CLI 实例。
 启动 GPT 时会为该应用设置 SOCKS5 启动参数，以代理端解析网页请求域名；不修改系统 DNS，保留本机和局域网直连。

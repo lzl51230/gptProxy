@@ -18,9 +18,11 @@
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，统一安装包位于 `dist/ChatGPT-Proxy-2.2.1-Universal.pkg`。运行 `./dist/install.sh ./dist/ChatGPT-Proxy-2.2.1-Universal.pkg`，通过命令行安装器将两个应用安装到 `/Applications`，并安装 `/usr/local/bin/proxybridge`。只有安装器使用管理员权限，代理进程以当前用户运行。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.2.2-Universal.zip`。ZIP 只包含 ChatGPT Proxy；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
-本项目未配置 Apple Developer ID Application 或 Installer 证书，因此统一安装包未签名。在其他 Mac 上安装时，可通过 Finder 右键菜单打开，或在“隐私与安全性”设置中允许运行。构建过程会先验证上游 ProxyBridge 安装包，再提取其组件；安装后的 ProxyBridge 应用和系统扩展保留上游代码签名。
+应用检测 ProxyBridge 是否安装完整且版本为 4.1.0；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
+
+本项目未配置 Apple Developer ID 证书，启动器采用临时签名。在其他 Mac 上首次打开时，可能需要在“隐私与安全性”中允许运行。下载安装的 ProxyBridge 保留官方签名。历史统一安装包移至 `build/legacy-distributions`。
 
 
 后台监控与自动切换：
@@ -37,4 +39,4 @@ make verify
 
 设置中的“外观 → 颜色主题”支持跟随系统（默认），以及参考 [VS Code 内置主题](https://github.com/microsoft/vscode/tree/main/extensions) 的 Dark Modern、Light Modern、Monokai 和 Solarized Dark 配色。主题立即应用到主窗口、设置窗口和首次配置面板，并自动保存；选择“跟随系统”可恢复 macOS 外观。
 
-ProxyBridge 活动日志位于 `~/Library/Logs/ChatGPT Proxy/proxybridge.log`，达到 5 MB 轮转。主窗口可查看日志、取消启用；安装或升级入口通过命令行安装器及 macOS 原生管理员认证完成。
+ProxyBridge 活动日志位于 `~/Library/Logs/ChatGPT Proxy/proxybridge.log`，达到 5 MB 轮转。主窗口可查看日志、取消下载或启用；修复入口通过命令行安装器及 macOS 原生管理员认证完成。

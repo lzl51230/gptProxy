@@ -71,8 +71,9 @@ struct ContentView: View {
             statusRow(
                 "ProxyBridge",
                 ready: model.proxyBridgeInstalled,
-                detail: model.proxyBridgeInstalled ? "已安装" : "未安装",
-                issue: .proxyBridge
+                detail: model.proxyBridgeStatus.detail,
+                issue: .proxyBridge,
+                repair: model.proxyBridgeStatus.requiresRepair ? { model.repairProxyBridge() } : nil
             )
             statusRow(
                 "网络扩展",
@@ -131,7 +132,7 @@ struct ContentView: View {
                 Spacer()
                 if model.isBusy {
                     Button("网络扩展设置") { model.openNetworkExtensionSettings() }
-                    Button("取消启用") { Task { await model.cancelProxyStartup() } }
+                    Button("取消") { Task { await model.cancelProxyStartup() } }.disabled(!model.canCancelOperation)
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -144,7 +145,8 @@ struct ContentView: View {
         _ title: String,
         ready: Bool,
         detail: String,
-        issue: StatusIssue
+        issue: StatusIssue,
+        repair: (() -> Void)? = nil
     ) -> some View {
         GridRow {
             Group {
@@ -171,6 +173,9 @@ struct ContentView: View {
             Text(detail)
                 .foregroundStyle(theme.secondary)
                 .lineLimit(1)
+            if let repair {
+                Button("修复", action: repair).disabled(model.isBusy)
+            }
         }
     }
 
@@ -179,7 +184,7 @@ struct ContentView: View {
         case .downloadChatGPT:
             model.openChatGPTDownload()
         case .installProxyBridge:
-            model.openBundledProxyBridgeInstaller()
+            model.repairProxyBridge()
         case .openNetworkExtensionSettings:
             model.openNetworkExtensionSettings()
         case .installProfile:
@@ -340,8 +345,8 @@ private struct SetupView: View {
                 .help("关闭")
             }
 
-            setupRow(number: 1, title: "安装 ProxyBridge") {
-                model.openBundledProxyBridgeInstaller()
+            setupRow(number: 1, title: "检查并修复 ProxyBridge") {
+                model.repairProxyBridge()
             }
             setupRow(number: 2, title: "允许网络扩展") {
                 model.openNetworkExtensionSettings()

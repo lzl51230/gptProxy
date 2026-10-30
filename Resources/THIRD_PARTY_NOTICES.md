@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This distribution includes the official ProxyBridge 4.1.0 universal installer.
+This app can download the official ProxyBridge 4.1.0 universal installer on request. The installer is not included in this distribution.
 
 - Project: https://github.com/InterceptSuite/ProxyBridge
 - Installer SHA-256: `c375fff53349f009e7bedacb47528642041776f859f58972bfad02b190ef7dec`

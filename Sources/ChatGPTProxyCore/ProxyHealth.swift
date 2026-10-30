@@ -40,7 +40,7 @@ public enum SystemExtensionParser {
             let fields = row.split(whereSeparator: \Character.isWhitespace)
             return fields.contains("L4HJT32Z59")
                 && fields.contains("com.interceptsuite.ProxyBridge.extension")
-                && fields.contains(where: { $0.hasPrefix("(4.1.0/") })
+                && fields.contains(where: { $0.hasPrefix("(\(ProxyBridgeRelease.version)/") })
                 && row.localizedCaseInsensitiveContains("[activated enabled]")
         }
     }

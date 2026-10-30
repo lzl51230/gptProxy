@@ -30,7 +30,7 @@ enum StatusIssue: Identifiable, Equatable {
         switch self {
         case let .chatGPT(requiresUpdate):
             requiresUpdate ? "ChatGPT 需要更新" : "尚未安装 ChatGPT"
-        case .proxyBridge: "尚未安装 ProxyBridge"
+        case .proxyBridge: "ProxyBridge 需要修复"
         case .networkExtension: "网络扩展未启用"
         case .dedicatedProfile: "专用配置未启用"
         case let .localProxy(_, egressLocation):
@@ -47,7 +47,7 @@ enum StatusIssue: Identifiable, Equatable {
                 "请下载并安装官方 ChatGPT 桌面版，然后重新检测。"
             }
         case .proxyBridge:
-            "请运行应用随附的 ProxyBridge 安装包，完成安装后重新检测。"
+            "点击修复后，将通过设置中的代理下载并校验官方安装包，再由命令行安装。安装需要 macOS 管理员认证。"
         case .networkExtension:
             "请在系统设置的“网络扩展”中启用 ProxyBridge，完成后返回并重新检测。"
         case .dedicatedProfile:
@@ -64,7 +64,7 @@ enum StatusIssue: Identifiable, Equatable {
     var actionTitle: String {
         switch self {
         case let .chatGPT(requiresUpdate): requiresUpdate ? "更新 ChatGPT" : "下载 ChatGPT"
-        case .proxyBridge: "命令行安装／升级"
+        case .proxyBridge: "修复"
         case .networkExtension: "打开网络扩展设置"
         case let .dedicatedProfile(manualFallback):
             manualFallback ? "启用代理" : "启用代理"

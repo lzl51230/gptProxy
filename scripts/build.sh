@@ -7,30 +7,8 @@ APP_DIR="$BUILD_DIR/ChatGPT Proxy.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-PROXYBRIDGE_INSTALLER_NAME=ProxyBridge-v4.1.0-Universal-Installer.pkg
-DEFAULT_PROXYBRIDGE_INSTALLER="$PROJECT_DIR/Resources/$PROXYBRIDGE_INSTALLER_NAME"
-PROXYBRIDGE_INSTALLER_SOURCE=${PROXYBRIDGE_INSTALLER_SOURCE:-$DEFAULT_PROXYBRIDGE_INSTALLER}
 DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 export DEVELOPER_DIR
-
-VALIDATED_INSTALLER_DIR=
-cleanup() {
-    if [[ -n "$VALIDATED_INSTALLER_DIR" && -d "$VALIDATED_INSTALLER_DIR" ]]; then
-        /bin/rm -rf "$VALIDATED_INSTALLER_DIR"
-    fi
-}
-trap cleanup EXIT
-
-if [[ "$PROXYBRIDGE_INSTALLER_SOURCE" == "$DEFAULT_PROXYBRIDGE_INSTALLER" ]]; then
-    /bin/mkdir -p "$BUILD_DIR"
-    VALIDATED_INSTALLER_DIR=$(/usr/bin/mktemp -d "$BUILD_DIR/proxybridge-installer.XXXXXX")
-    PROXYBRIDGE_INSTALLER_SOURCE="$VALIDATED_INSTALLER_DIR/$PROXYBRIDGE_INSTALLER_NAME"
-    "$PROJECT_DIR/scripts/validate-proxybridge-installer.sh" \
-        "$DEFAULT_PROXYBRIDGE_INSTALLER" \
-        "$PROXYBRIDGE_INSTALLER_SOURCE" >/dev/null
-else
-    "$PROJECT_DIR/scripts/validate-proxybridge-installer.sh" "$PROXYBRIDGE_INSTALLER_SOURCE" >/dev/null
-fi
 
 rm -rf "$BUILD_DIR/arm64" "$BUILD_DIR/x86_64" "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
@@ -50,8 +28,6 @@ fi
 /bin/cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
 /bin/cp "$PROJECT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 /bin/cp "$PROJECT_DIR/Resources/ChatGPT-Only.pbprofile" "$RESOURCES_DIR/ChatGPT-Only.pbprofile"
-/bin/cp "$PROXYBRIDGE_INSTALLER_SOURCE" "$RESOURCES_DIR/$PROXYBRIDGE_INSTALLER_NAME"
-/bin/chmod 644 "$RESOURCES_DIR/$PROXYBRIDGE_INSTALLER_NAME"
 /bin/cp "$PROJECT_DIR/Resources/THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
 /usr/bin/codesign --force --deep --sign - "$APP_DIR"
 
