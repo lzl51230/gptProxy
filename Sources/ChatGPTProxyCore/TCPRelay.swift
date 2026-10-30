@@ -9,6 +9,13 @@ public final class TCPRelay: @unchecked Sendable {
     private var listener: NWListener?
     private var pairs: [UUID: RelayPair] = [:]
     private var storedBoundPort: UInt16 = 0
+    private var stopping = false
+    private var started = false
+    private let cancellation = DispatchGroup()
+
+    public var isReady: Bool {
+        lock.withLock { storedBoundPort != 0 && !stopping }
+    }
 
     public var boundPort: UInt16 {
         lock.withLock { storedBoundPort }
@@ -20,9 +27,19 @@ public final class TCPRelay: @unchecked Sendable {
     }
 
     public func start() async throws {
+        let cancellation = self.cancellation
+        let mayStart = lock.withLock { () -> Bool in
+            guard !started, !stopping else { return false }
+            started = true
+            cancellation.enter()
+            return true
+        }
+        guard mayStart else { throw RelayError.alreadyStarted }
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: requestedPort)
-        let newListener = try NWListener(using: parameters)
+        let newListener: NWListener
+        do { newListener = try NWListener(using: parameters) }
+        catch { cancellation.leave(); throw error }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let completion = OneShotContinuation(continuation)
@@ -33,30 +50,42 @@ public final class TCPRelay: @unchecked Sendable {
                         completion.fail(RelayError.missingBoundPort)
                         return
                     }
-                    self.lock.withLock {
+                    let ready = self.lock.withLock { () -> Bool in
+                        guard !self.stopping else { return false }
                         self.storedBoundPort = port.rawValue
+                        return true
                     }
-                    completion.succeed()
+                    if ready { completion.succeed() }
+                    else { completion.fail(RelayError.cancelledBeforeReady) }
                 case let .failed(error):
+                    self?.lock.withLock { self?.storedBoundPort = 0 }
+                    newListener.cancel()
                     completion.fail(error)
                 case .cancelled:
+                    self?.lock.withLock { self?.storedBoundPort = 0 }
+                    newListener.stateUpdateHandler = nil
+                    cancellation.leave()
                     completion.fail(RelayError.cancelledBeforeReady)
                 default:
                     break
                 }
             }
             newListener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
+                if let self { self.accept(connection) }
+                else { connection.cancel() }
             }
-            lock.withLock {
+            let shouldCancel = lock.withLock { () -> Bool in
                 listener = newListener
+                return stopping
             }
             newListener.start(queue: queue)
+            if shouldCancel { newListener.cancel() }
         }
     }
 
     public func stop() {
         let state = lock.withLock { () -> (NWListener?, [RelayPair]) in
+            stopping = true
             let currentListener = listener
             listener = nil
             storedBoundPort = 0
@@ -68,27 +97,39 @@ public final class TCPRelay: @unchecked Sendable {
         state.1.forEach { $0.stop() }
     }
 
+    /// Returns only after the listener and all accepted sockets have cancelled.
+    public func stopAndWait() async {
+        stop()
+        await withCheckedContinuation { continuation in
+            cancellation.notify(queue: .global()) { continuation.resume() }
+        }
+    }
+
     private func accept(_ client: NWConnection) {
         let identifier = UUID()
         let upstream = NWConnection(host: "127.0.0.1", port: upstreamPort, using: .tcp)
-        let pair = RelayPair(client: client, upstream: upstream, queue: queue) { [weak self] in
+        let pair = RelayPair(client: client, upstream: upstream, queue: queue, cancellation: cancellation) { [weak self] in
             _ = self?.lock.withLock {
                 self?.pairs.removeValue(forKey: identifier)
             }
         }
         lock.withLock {
+            guard !stopping else { client.cancel(); return }
             pairs[identifier] = pair
+            pair.start()
         }
-        pair.start()
     }
 }
 
 public enum RelayError: LocalizedError {
+    case alreadyStarted
     case missingBoundPort
     case cancelledBeforeReady
 
     public var errorDescription: String? {
         switch self {
+        case .alreadyStarted:
+            "中继实例已启动或停止，请创建新实例。"
         case .missingBoundPort:
             "中继已启动，但系统没有返回监听端口。"
         case .cancelledBeforeReady:
@@ -132,6 +173,7 @@ private final class RelayPair: @unchecked Sendable {
     private let upstream: NWConnection
     private let queue: DispatchQueue
     private let onStop: @Sendable () -> Void
+    private let cancellation: DispatchGroup
     private let lock = NSLock()
     private var stopped = false
     private var completedDirections: Set<Direction> = []
@@ -140,19 +182,26 @@ private final class RelayPair: @unchecked Sendable {
         client: NWConnection,
         upstream: NWConnection,
         queue: DispatchQueue,
+        cancellation: DispatchGroup,
         onStop: @escaping @Sendable () -> Void
     ) {
         self.client = client
         self.upstream = upstream
         self.queue = queue
         self.onStop = onStop
+        self.cancellation = cancellation
     }
 
     func start() {
+        let cancellation = self.cancellation
+        cancellation.enter()
+        cancellation.enter()
         client.stateUpdateHandler = { [weak self] state in
+            if case .cancelled = state { cancellation.leave() }
             self?.handle(state)
         }
         upstream.stateUpdateHandler = { [weak self] state in
+            if case .cancelled = state { cancellation.leave() }
             guard let self else { return }
             switch state {
             case .ready:

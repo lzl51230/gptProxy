@@ -4,6 +4,40 @@ import XCTest
 @testable import ChatGPTProxyCore
 
 final class RelayIntegrationTests: XCTestCase {
+    func testRepeatedStopAndWaitReleasesTheSameListeningPort() async throws {
+        var relay = TCPRelay(listenPort: 0, upstreamPort: 7890)
+        try await relay.start()
+        let port = relay.boundPort
+        for _ in 0..<1_000 {
+            XCTAssertTrue(relay.isReady)
+            await relay.stopAndWait()
+            XCTAssertFalse(relay.isReady)
+            relay = TCPRelay(listenPort: port, upstreamPort: 7890)
+            try await relay.start()
+        }
+        await relay.stopAndWait()
+    }
+
+    func testStopAndWaitClosesAcceptedConnectionsBeforeRebinding() async throws {
+        let upstream = try EchoServer()
+        try await upstream.start()
+        defer { upstream.stop() }
+        let relay = TCPRelay(listenPort: 0, upstreamPort: upstream.port)
+        try await relay.start()
+        let port = relay.boundPort
+        let client = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        client.start(queue: DispatchQueue.global())
+        defer { client.cancel() }
+        try await client.waitUntilReady()
+        try await client.send(Data("ping".utf8))
+        let response = try await client.receiveExactly(4)
+        XCTAssertEqual(response, Data("ping".utf8))
+        await relay.stopAndWait()
+        let replacement = TCPRelay(listenPort: port, upstreamPort: upstream.port)
+        try await replacement.start()
+        await replacement.stopAndWait()
+    }
+
     func testRelayForwardsBytesInBothDirections() async throws {
         let upstream = try EchoServer()
         try await upstream.start()

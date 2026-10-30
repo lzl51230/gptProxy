@@ -103,7 +103,7 @@ final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private let profileConfigurator: (@MainActor () async throws -> Void)?
     private let refreshAfterProfileConfiguration: (@MainActor () async -> Void)?
-    private var relay: TCPRelay?
+    private let relayLifecycle = RelayLifecycle()
     @Published private var activeOperation: UUID?
 
     static let chatGPTURL = URL(fileURLWithPath: "/Applications/ChatGPT.app", isDirectory: true)
@@ -120,7 +120,7 @@ final class AppModel: ObservableObject {
         if profileConfigurator == nil, let port = UInt16(exactly: proxyPort), port > 0 {
             monitor.start(port: port)
             Task {
-                do { try await restartRelay(upstreamPort: port) }
+                do { try await ensureRelay(upstreamPort: port) }
                 catch { phase = .failed(error.localizedDescription) }
             }
         }
@@ -383,7 +383,7 @@ final class AppModel: ObservableObject {
         supportsUDP = health.supportsUDP
         egressLocation = health.egressLocation
 
-        try await restartRelay(upstreamPort: port)
+        try await ensureRelay(upstreamPort: port)
         try await openApplication(at: Self.proxyBridgeURL, activates: false)
         extensionEnabled = await waitForProxyBridgeExtension()
         guard extensionEnabled else { throw AppError.extensionDisabled }
@@ -433,14 +433,16 @@ final class AppModel: ObservableObject {
         activeOperation = nil
     }
 
-    private func restartRelay(upstreamPort: UInt16) async throws {
-        relay?.stop()
-        let newRelay = TCPRelay(
-            listenPort: ProxyConfiguration.relayPort,
-            upstreamPort: upstreamPort
-        )
-        try await newRelay.start()
-        relay = newRelay
+    private func ensureRelay(upstreamPort: UInt16) async throws {
+        do {
+            try await relayLifecycle.ensureRunning(upstreamPort: upstreamPort)
+        } catch {
+            let underlying = error as NSError
+            throw AppError.launchStepFailed(
+                "启动中继 127.0.0.1:\(ProxyConfiguration.relayPort)",
+                "\(error.localizedDescription) [\(underlying.domain):\(underlying.code)]"
+            )
+        }
     }
 
     private func waitForProxyBridgeExtension() async -> Bool {
@@ -489,11 +491,16 @@ final class AppModel: ObservableObject {
     private func openApplication(at url: URL, activates: Bool) async throws {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = activates
-        _ = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        } catch {
+            throw AppError.launchStepFailed("打开 \(url.deletingPathExtension().lastPathComponent)", error.localizedDescription)
+        }
     }
 }
 
 enum AppError: LocalizedError, Equatable {
+    case launchStepFailed(String, String)
     case chatGPTMissing
     case chatGPTUpdateRequired
     case proxyBridgeMissing
@@ -508,6 +515,8 @@ enum AppError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case let .launchStepFailed(step, detail):
+            "\(step)失败：\(detail)"
         case .chatGPTMissing:
             "尚未安装官方 ChatGPT。"
         case .chatGPTUpdateRequired:
