@@ -46,6 +46,9 @@ struct ContentView: View {
                     .foregroundStyle(statusColor)
             }
             Spacer()
+            SettingsLink { Image(systemName: "gearshape") }
+                .help("设置…")
+                .accessibilityLabel("设置")
             Button {
                 Task { await model.refreshStatus() }
             } label: {
@@ -228,16 +231,36 @@ struct ContentView: View {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var login: LaunchAtLoginController
 
     var body: some View {
         Form {
-            TextField("代理端口", value: $model.proxyPort, format: .number.grouping(.never))
-                .disabled(model.isBusy)
-            Button("重新检测") {
-                Task { await model.refreshStatus() }
+            Section("启动") {
+                Toggle("开机自启动", isOn: Binding(
+                    get: { login.isEnabled },
+                    set: { enabled in Task { await login.setEnabled(enabled) } }
+                ))
+                .toggleStyle(.switch)
+                .disabled(login.isWorking)
+                Text("登录 macOS 后在菜单栏运行，不自动打开主窗口。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(login.statusText).font(.caption)
+                if let error = login.errorMessage {
+                    Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
+                Button("打开登录项与扩展") { login.openSystemSettings() }
             }
-            .disabled(model.isBusy)
+            Section("代理") {
+                TextField("代理端口", value: $model.proxyPort, format: .number.grouping(.never))
+                    .disabled(model.isBusy)
+                Button("重新检测") {
+                    Task { await model.refreshStatus() }
+                }
+                .disabled(model.isBusy)
+            }
         }
+        .onAppear { login.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in login.refresh() }
     }
 }
 

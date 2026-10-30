@@ -1,7 +1,7 @@
-ChatGPT Proxy 2.1
+ChatGPT Proxy 2.2
 
 首次使用：
-1. 右键 ChatGPT-Proxy-2.1-Universal.pkg，选择“打开”并完成安装。安装器会同时安装 ChatGPT Proxy 和 ProxyBridge。
+1. 右键 ChatGPT-Proxy-2.2-Universal.pkg，选择“打开”并完成安装。安装器会同时安装 ChatGPT Proxy 和 ProxyBridge。
 2. 打开 ChatGPT Proxy，点击“首次配置”。
 3. 打开 ProxyBridge，并按 macOS 提示允许网络扩展。
 4. 回到启动器，使用“自动导入并启用”安装 ChatGPT Only 专用配置。
@@ -21,5 +21,8 @@ ChatGPT Proxy 2.1
 - 每秒通过配置的本地代理向 https://www.google.com/ 发送 HEAD 请求，要求 HTTP 200；请求失败、超时或延迟超过 800ms 即测速。
 - 仅支持 Clash Party 全局模式。只在同订阅、同国家或地区内选择不超过 800ms 的最快节点；没有合格节点保持原选择。
 - 成功切换后冷却 5 秒，并关闭经过原节点与 GLOBAL 的旧连接，促使应用重连。
-- 无法确认节点来源或地区时不切换；规则／直连模式只监测、不自动切换。无需另开控制端口或登录自启。
+- 无法确认节点来源或地区时不切换；规则／直连模式只监测、不自动切换。无需另开控制端口。
 - 监控日志位于 ~/Library/Logs/ChatGPT Proxy/monitor.jsonl，超过 5MB 自动轮转。
+
+
+主窗口齿轮、菜单栏“设置…”或 ⌘, 可打开设置窗口。“开机自启动”使用系统登录项注册，开启后在“系统设置 → 通用 → 登录项与扩展 → 登录时打开”中显示 ChatGPT Proxy。登录启动仅驻留菜单栏；手动启动显示主窗口。首次安装默认不注册，状态以系统实际设置为准。
