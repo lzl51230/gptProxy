@@ -344,7 +344,7 @@ private struct SetupView: View {
             setupRow(number: 2, title: "打开并允许网络扩展") {
                 model.openProxyBridge()
             }
-            setupRow(number: 3, title: "导入 ChatGPT 专用配置") {
+            setupRow(number: 3, title: "导出 ProxyBridge 专用配置") {
                 model.revealBundledProfile()
             }
 
