@@ -1,0 +1,302 @@
+import ChatGPTProxyCore
+import SwiftUI
+
+struct ContentView: View {
+    @ObservedObject var model: AppModel
+    @State private var presentedIssue: StatusIssue?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            header
+            statusSection
+            Divider()
+            proxySection
+            actionSection
+        }
+        .padding(28)
+        .task {
+            await model.refreshStatus()
+        }
+        .sheet(isPresented: $model.showingSetup) {
+            SetupView(model: model)
+        }
+        .alert(item: $presentedIssue) { issue in
+            Alert(
+                title: Text(issue.title),
+                message: Text(issue.message),
+                primaryButton: .default(Text(issue.actionTitle)) {
+                    perform(issue.action)
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("ChatGPT Proxy")
+                    .font(.title2.weight(.semibold))
+                Text(model.phase.message)
+                    .font(.callout)
+                    .foregroundStyle(statusColor)
+            }
+            Spacer()
+            Button {
+                Task { await model.refreshStatus() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("重新检测")
+            .disabled(model.isBusy)
+        }
+    }
+
+    private var statusSection: some View {
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+            statusRow(
+                "ChatGPT",
+                ready: model.chatGPTInstalled,
+                detail: model.chatGPTInstalled ? "已安装新版" : model.chatGPTNeedsUpdate ? "需要更新" : "未安装",
+                issue: .chatGPT(requiresUpdate: model.chatGPTNeedsUpdate)
+            )
+            statusRow(
+                "ProxyBridge",
+                ready: model.proxyBridgeInstalled,
+                detail: model.proxyBridgeInstalled ? "已安装" : "未安装",
+                issue: .proxyBridge
+            )
+            statusRow(
+                "网络扩展",
+                ready: model.extensionEnabled,
+                detail: model.extensionEnabled ? "已启用" : "未启用",
+                issue: .networkExtension
+            )
+            statusRow(
+                "专用配置",
+                ready: model.proxyBridgeProfileReady,
+                detail: model.proxyBridgeProfileReady ? "已启用" : "未启用",
+                issue: .dedicatedProfile(
+                    manualFallback: model.profileInstallRequiresManualFallback
+                )
+            )
+            statusRow(
+                "本地代理",
+                ready: model.localProxyReady,
+                detail: proxyDetail,
+                issue: .localProxy(
+                    port: model.proxyPort,
+                    egressLocation: model.egressLocation
+                )
+            )
+        }
+    }
+
+    private var proxySection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("代理端口")
+                .font(.headline)
+            HStack(spacing: 10) {
+                Text("127.0.0.1")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Text(":")
+                    .foregroundStyle(.tertiary)
+                TextField("7890", value: $model.proxyPort, format: .number.grouping(.never))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 110)
+                    .monospacedDigit()
+                    .disabled(model.isBusy)
+                Stepper("", value: $model.proxyPort, in: 1...65_535)
+                    .labelsHidden()
+                    .disabled(model.isBusy)
+                Spacer()
+            }
+        }
+    }
+
+    private var actionSection: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Button {
+                    Task { await model.launchChatGPT() }
+                } label: {
+                    Label("启动 ChatGPT", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(model.isBusy)
+
+                Button {
+                    model.openCodexDirectory()
+                } label: {
+                    Label("打开 .codex", systemImage: "folder")
+                }
+                .controlSize(.large)
+            }
+
+            HStack {
+                Button("首次配置") {
+                    model.showingSetup = true
+                }
+                Button("打开 ProxyBridge") {
+                    model.openProxyBridge()
+                }
+                Spacer()
+                if model.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .buttonStyle(.link)
+        }
+    }
+
+    private func statusRow(
+        _ title: String,
+        ready: Bool,
+        detail: String,
+        issue: StatusIssue
+    ) -> some View {
+        GridRow {
+            Group {
+                if ready {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Button {
+                        presentedIssue = issue
+                    } label: {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("查看处理方法")
+                    .accessibilityLabel("\(title)检查未通过，查看处理方法")
+                    .disabled(model.isBusy)
+                }
+            }
+            .frame(width: 18, height: 18)
+            Text(title)
+                .fontWeight(.medium)
+                .frame(width: 100, alignment: .leading)
+            Text(detail)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func perform(_ action: RemediationAction) {
+        switch action {
+        case .downloadChatGPT:
+            model.openChatGPTDownload()
+        case .installProxyBridge:
+            model.openBundledProxyBridgeInstaller()
+        case .openNetworkExtensionSettings:
+            model.openNetworkExtensionSettings()
+        case .installProfile:
+            Task { await model.installAndActivateBundledProfile() }
+        case .revealProfile:
+            model.revealBundledProfile()
+        case .refreshStatus:
+            Task { await model.refreshStatus() }
+        }
+    }
+
+    private var proxyDetail: String {
+        guard model.proxyReachable else { return "不可用" }
+        let udp = model.supportsUDP ? "UDP 可用" : "仅 TCP"
+        return "出口 \(model.egressLocation ?? "未知") · \(udp)"
+    }
+
+    private var statusColor: Color {
+        switch model.phase {
+        case .ready:
+            .green
+        case .failed:
+            .red
+        default:
+            .secondary
+        }
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Form {
+            TextField("代理端口", value: $model.proxyPort, format: .number.grouping(.never))
+                .disabled(model.isBusy)
+            Button("重新检测") {
+                Task { await model.refreshStatus() }
+            }
+            .disabled(model.isBusy)
+        }
+    }
+}
+
+private struct SetupView: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Text("首次配置")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("关闭")
+            }
+
+            setupRow(number: 1, title: "安装 ProxyBridge") {
+                model.openBundledProxyBridgeInstaller()
+            }
+            setupRow(number: 2, title: "打开并允许网络扩展") {
+                model.openProxyBridge()
+            }
+            setupRow(number: 3, title: "导入 ChatGPT 专用配置") {
+                model.revealBundledProfile()
+            }
+
+            if !model.chatGPTInstalled {
+                Divider()
+                Button {
+                    model.openChatGPTDownload()
+                } label: {
+                    Label(
+                        model.chatGPTNeedsUpdate ? "更新官方 ChatGPT" : "下载官方 ChatGPT",
+                        systemImage: "arrow.down.circle"
+                    )
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 470)
+    }
+
+    private func setupRow(number: Int, title: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 14) {
+            Text("\(number)")
+                .font(.headline.monospacedDigit())
+                .frame(width: 28, height: 28)
+                .background(.quaternary, in: Circle())
+            Text(title)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: action) {
+                Image(systemName: number == 1 ? "shippingbox" : number == 2 ? "network" : "doc.badge.arrow.up")
+            }
+            .help(title)
+        }
+    }
+}

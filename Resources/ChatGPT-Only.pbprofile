@@ -1,0 +1,37 @@
+{
+  "closeToMenuBar" : true,
+  "name" : "ChatGPT Only",
+  "proxyConfigs" : [
+    {
+      "host" : "127.0.0.1",
+      "id" : "chatgpt-proxy-relay",
+      "name" : "ChatGPT Proxy Relay",
+      "port" : 17890,
+      "type" : "socks5"
+    }
+  ],
+  "proxyRules" : [
+    {
+      "action" : "DIRECT",
+      "enabled" : true,
+      "localId" : "chatgpt-local-direct",
+      "name" : "ChatGPT Local Direct",
+      "processNames" : "com.openai.*;com.openai.chat;ChatGPT",
+      "protocol" : "TCP",
+      "targetHosts" : "localhost;127.0.0.1;::1;192.168.*.*;192.168.100.81",
+      "targetPorts" : "*"
+    },
+    {
+      "action" : "chatgpt-proxy-relay",
+      "enabled" : true,
+      "localId" : "chatgpt-only-proxy",
+      "name" : "ChatGPT Proxy",
+      "processNames" : "com.openai.*;com.openai.chat;ChatGPT",
+      "protocol" : "BOTH",
+      "targetHosts" : "*",
+      "targetPorts" : "*"
+    }
+  ],
+  "runAtStartup" : false,
+  "trafficLoggingEnabled" : false
+}
