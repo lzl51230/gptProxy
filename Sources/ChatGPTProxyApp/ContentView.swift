@@ -2,6 +2,7 @@ import ChatGPTProxyCore
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.selectedAppTheme) private var theme
     @ObservedObject var model: AppModel
     @State private var presentedIssue: StatusIssue?
 
@@ -20,6 +21,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showingSetup) {
             SetupView(model: model)
+                .appTheme()
         }
         .alert(item: $presentedIssue) { issue in
             Alert(
@@ -105,10 +107,10 @@ struct ContentView: View {
                 .font(.headline)
             HStack(spacing: 10) {
                 Text("127.0.0.1")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.secondary)
                     .monospacedDigit()
                 Text(":")
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(theme.secondary.opacity(0.65))
                 TextField("7890", value: $model.proxyPort, format: .number.grouping(.never))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 110)
@@ -189,7 +191,7 @@ struct ContentView: View {
                 .fontWeight(.medium)
                 .frame(width: 100, alignment: .leading)
             Text(detail)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.secondary)
                 .lineLimit(1)
         }
     }
@@ -224,7 +226,7 @@ struct ContentView: View {
         case .failed:
             .red
         default:
-            .secondary
+            theme.secondary
         }
     }
 }
@@ -232,9 +234,20 @@ struct ContentView: View {
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var login: LaunchAtLoginController
+    @AppStorage(AppTheme.storageKey) private var theme: AppTheme = .system
 
     var body: some View {
         Form {
+            Section("外观") {
+                Picker("颜色主题", selection: $theme) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Text(theme.title).tag(theme)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text("配色参考 VS Code。选择后立即应用，并在下次启动时保留。")
+                    .font(.caption).foregroundStyle(theme.secondary)
+            }
             Section("启动") {
                 Toggle("开机自启动", isOn: Binding(
                     get: { login.isEnabled },
@@ -243,7 +256,7 @@ struct SettingsView: View {
                 .toggleStyle(.switch)
                 .disabled(login.isWorking)
                 Text("登录 macOS 后在菜单栏运行，不自动打开主窗口。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(theme.secondary)
                 Text(login.statusText).font(.caption)
                 if let error = login.errorMessage {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
@@ -265,6 +278,7 @@ struct SettingsView: View {
 }
 
 private struct SetupView: View {
+    @Environment(\.selectedAppTheme) private var theme
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -326,6 +340,7 @@ private struct SetupView: View {
 }
 
 private struct MonitorStatusView: View {
+    @Environment(\.selectedAppTheme) private var theme
     @ObservedObject var monitor: AutoSwitchMonitor
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -337,7 +352,7 @@ private struct MonitorStatusView: View {
             Text(monitor.status)
             Text(monitor.currentNode).font(.caption).textSelection(.enabled)
             if let latency = monitor.latency { Text("Google HEAD · \(latency)ms").monospacedDigit() }
-            Text(monitor.lastSwitch).font(.caption).foregroundStyle(.secondary)
+            Text(monitor.lastSwitch).font(.caption).foregroundStyle(theme.secondary)
         }
     }
 }

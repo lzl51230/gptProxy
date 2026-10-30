@@ -12,7 +12,7 @@ final class MainWindowController {
     func show() {
         NSApp.setActivationPolicy(.regular)
         if window == nil {
-            let controller = NSHostingController(rootView: ContentView(model: model))
+            let controller = NSHostingController(rootView: ContentView(model: model).appTheme())
             let window = NSWindow(contentViewController: controller)
             window.title = "ChatGPT Proxy"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -68,6 +68,7 @@ struct ChatGPTProxyApp: App {
             SettingsView(model: delegate.model, login: delegate.login)
                 .frame(width: 440)
                 .padding(20)
+                .appTheme()
         }
     }
 }

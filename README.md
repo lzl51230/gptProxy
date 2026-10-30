@@ -29,3 +29,5 @@ make verify
 
 
 主窗口齿轮、菜单栏“设置…”或 ⌘, 可打开设置窗口。“开机自启动”使用系统登录项注册，开启后在“系统设置 → 通用 → 登录项与扩展 → 登录时打开”中显示 ChatGPT Proxy。登录启动仅驻留菜单栏；手动启动显示主窗口。首次安装默认不注册，状态以系统实际设置为准。
+
+设置中的“外观 → 颜色主题”支持跟随系统（默认），以及参考 [VS Code 内置主题](https://github.com/microsoft/vscode/tree/main/extensions) 的 Dark Modern、Light Modern、Monokai 和 Solarized Dark 配色。主题立即应用到主窗口、设置窗口和首次配置面板，并自动保存；选择“跟随系统”可恢复 macOS 外观。
