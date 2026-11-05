@@ -23,10 +23,10 @@ private final class CurlProcess: @unchecked Sendable {
         if let running, running.isRunning { running.terminate() }
     }
 
-    func run(_ arguments: [String]) throws -> Data {
+    func run(_ arguments: [String], timeout: Int) throws -> Data {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        child.arguments = ["--disable", "--silent", "--noproxy", "*", "--max-time", "2"] + arguments
+        child.arguments = ["--disable", "--silent", "--noproxy", "*", "--max-time", String(timeout)] + arguments
         let output = Pipe()
         child.standardOutput = output
         child.standardError = FileHandle.nullDevice
@@ -46,28 +46,13 @@ private final class CurlProcess: @unchecked Sendable {
 }
 
 public enum MonitorHTTP {
-    public static let testURL = "https://www.google.com/"
+    public static let testURL = CodexConnectionSession.targetURL
 
-    public static func run(_ arguments: [String]) async throws -> Data {
+    public static func run(_ arguments: [String], timeout: Int = 2) async throws -> Data {
         let runner = CurlProcess()
         return try await withTaskCancellationHandler {
-            try await Task.detached(priority: .utility) { try runner.run(arguments) }.value
+            try await Task.detached(priority: .utility) { try runner.run(arguments, timeout: timeout) }.value
         } onCancel: { runner.cancel() }
-    }
-
-    public static func probe(port: UInt16) async throws -> Int {
-        let data = try await run([
-            "--noproxy", "", "--proxy", "socks5h://127.0.0.1:\(port)",
-            "--head", "--output", "/dev/null", "--max-time", "0.8",
-            "--header", "Cache-Control: no-cache", "--header", "Connection: close",
-            "--write-out", "%{http_code} %{time_total}", testURL,
-        ])
-        let parts = String(decoding: data, as: UTF8.self).split(separator: " ")
-        guard parts.count == 2, parts[0] == "200", let seconds = Double(parts[1]) else {
-            throw MonitorError.message("Google HEAD 未返回 HTTP 200")
-        }
-        // Round upward so a request above the limit is never rounded into health.
-        return Int(ceil(seconds * 1000))
     }
 }
 
@@ -106,10 +91,10 @@ public struct ClashSnapshot: Sendable {
 
 public struct ClashControllerClient: Sendable {
     public init() {}
-    public func request(socket: String, path: String, method: String = "GET", body: Data? = nil) async throws -> Data {
+    public func request(socket: String, path: String, method: String = "GET", body: Data? = nil, timeout: Int = 2) async throws -> Data {
         var args = ["--unix-socket", socket, "--request", method, "--write-out", "\n%{http_code}", "http://localhost" + path]
         if let body { args += ["--header", "Content-Type: application/json", "--data-binary", String(decoding: body, as: UTF8.self)] }
-        let response = try await MonitorHTTP.run(args)
+        let response = try await MonitorHTTP.run(args, timeout: timeout)
         guard let split = response.lastIndex(of: 10),
               let status = Int(String(decoding: response[response.index(after: split)...], as: UTF8.self)),
               (200..<300).contains(status) else { throw MonitorError.message("Clash 控制接口请求失败") }
@@ -147,7 +132,7 @@ public struct ClashControllerClient: Sendable {
 
     public func delay(socket: String, name: String) async throws -> Int {
         let url = MonitorHTTP.testURL.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
-        let data = try await request(socket: socket, path: "/proxies/\(encoded(name))/delay?url=\(url)&timeout=800&expected=200")
+        let data = try await request(socket: socket, path: "/proxies/\(encoded(name))/delay?url=\(url)&timeout=10000&expected=401", timeout: 12)
         struct Result: Decodable { let delay: Int }
         return try JSONDecoder().decode(Result.self, from: data).delay
     }

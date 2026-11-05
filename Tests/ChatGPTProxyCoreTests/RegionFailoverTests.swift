@@ -8,7 +8,7 @@ private actor RegionFixture {
     var tested: [String] = []
     var selected: [String] = []
     var closed: [String] = []
-    var probeValue = 900
+    var failures = 2
     var mode = "global"
     var manualChange = false
     var changeConfiguration = false
@@ -47,31 +47,41 @@ private actor RegionFixture {
     func set(_ name: String, _ value: Int?) { values[name] = value }
     func configure(healthy: Bool = false, block: Bool = false, manual: Bool = false, changed: Bool = false,
                    failure: Bool = false, rule: Bool = false) {
-        probeValue = healthy ? 800 : 900; blockTests = block; manualChange = manual
+        if healthy { failures = 0 }; blockTests = block; manualChange = manual
         changeConfiguration = changed; failRefresh = failure; mode = rule ? "rule" : "global"
     }
-    func probe() -> Int { probeValue }
+    func heartbeat() -> Bool {
+        if failures > 0 { failures -= 1; return false }
+        return true
+    }
 }
 
 @MainActor
 final class RegionFailoverTests: XCTestCase {
     private var suites: [String] = []
+    private let clock = MonitorTestClock()
     private func storage() -> UserDefaults {
         let suite = "RegionFailoverTests.\(UUID().uuidString)"
         suites.append(suite)
         return UserDefaults(suiteName: suite)!
     }
-    override func tearDown() {
+    override func tearDown() async throws {
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        super.tearDown()
+        try await super.tearDown()
     }
     private func monitor(_ f: RegionFixture, defaults: UserDefaults? = nil) -> AutoSwitchMonitor {
-        AutoSwitchMonitor(operations: .init(
-            snapshot: { _ in try await f.snapshot() }, probe: { _ in await f.probe() },
+        let clock = self.clock
+        return AutoSwitchMonitor(operations: .init(
+            snapshot: { _ in try await f.snapshot() },
+            makeConnection: { _ in TestCodexConnection(clock: clock) { _ in await f.heartbeat() } },
             resolver: { NodeOriginResolver(origins: await f.origins) },
             delay: { _, name in try await f.delay(name) }, select: { _, name in await f.select(name) },
-            connections: { _, _ in ["old"] }, close: { _, id in await f.close(id) }
+            connections: { _, _ in ["old"] }, close: { _, id in await f.close(id) },
+            now: { clock.now() }, sleep: { clock.advance($0) }
         ), defaults: defaults ?? storage())
+    }
+    private func recover(_ monitor: AutoSwitchMonitor) async {
+        await monitor.tick(); await monitor.tick()
     }
     private func prepare(_ m: AutoSwitchMonitor, enabled: [String] = ["HK", "US"]) async {
         await m.refreshRegions()
@@ -81,11 +91,11 @@ final class RegionFailoverTests: XCTestCase {
     func testCurrentRegionFirstThenFirstEligibleRegionAndFastestNode() async {
         let f = RegionFixture(); let m = monitor(f)
         await prepare(m, enabled: ["JP", "HK", "US"])
-        await m.tick()
+        await recover(m)
         let tested = await f.tested; let selected = await f.selected; let closed = await f.closed
-        XCTAssertEqual(Set(tested.prefix(2)), ["日本旧", "日本快"])
-        XCTAssertEqual(Set(tested), ["日本旧", "日本快", "香港一", "香港二"])
-        XCTAssertEqual(tested.count, 4)
+        XCTAssertEqual(Set(tested.prefix(1)), ["日本快"])
+        XCTAssertEqual(Set(tested), ["日本快", "香港一", "香港二"])
+        XCTAssertEqual(tested.count, 3)
         XCTAssertEqual(selected, ["香港二"]); XCTAssertEqual(closed, ["old"])
     }
 
@@ -93,18 +103,18 @@ final class RegionFailoverTests: XCTestCase {
         let f = RegionFixture(); let m = monitor(f)
         await prepare(m)
         m.moveRegion("US", offset: -1); m.moveRegion("US", offset: -1)
-        await m.tick()
+        await recover(m)
         let tested = await f.tested; let selected = await f.selected
         XCTAssertEqual(selected, ["美国一"])
-        XCTAssertEqual(Set(tested), ["日本旧", "日本快", "美国一"])
+        XCTAssertEqual(Set(tested), ["日本快", "美国一"])
     }
 
     func testUsableCurrentRegionAndHealthyProbeDoNotTestBackups() async {
         let f = RegionFixture(); let m = monitor(f)
-        await prepare(m); await f.set("日本快", 800); await m.tick()
+        await prepare(m); await f.set("日本快", 800); await recover(m)
         let selected = await f.selected; let tested = await f.tested
         XCTAssertEqual(selected, ["日本快"])
-        XCTAssertEqual(Set(tested), ["日本旧", "日本快"])
+        XCTAssertEqual(Set(tested), ["日本快"])
         let healthy = RegionFixture(); let healthyMonitor = monitor(healthy)
         await prepare(healthyMonitor); await healthy.configure(healthy: true); await healthyMonitor.tick()
         let healthyTests = await healthy.tested
@@ -115,10 +125,10 @@ final class RegionFailoverTests: XCTestCase {
         let f = RegionFixture(); let m = monitor(f)
         await prepare(m)
         await f.set("香港一", -1); await f.set("香港二", 0); await f.set("美国一", 801)
-        await m.tick(); await m.tick()
+        await recover(m); clock.advance(.seconds(2)); await m.tick()
         let selected = await f.selected; let tested = await f.tested
-        XCTAssertTrue(selected.isEmpty); XCTAssertEqual(tested.count, 10)
-        XCTAssertTrue(m.status.contains("均无"))
+        XCTAssertTrue(selected.isEmpty); XCTAssertEqual(tested.count, 9)
+        XCTAssertEqual(m.retrySeconds, 4)
     }
 
     func testFailedFirstBackupFallsThroughAndRefreshWorksWhilePaused() async {
@@ -130,10 +140,10 @@ final class RegionFailoverTests: XCTestCase {
         XCTAssertEqual(m.regionNodeCounts["HK"], 2)
         await f.set("香港一", -1); await f.set("香港二", 801)
         // Exercise a single recovery without starting the background loop.
-        await m.tick()
+        await recover(m)
         let selected = await f.selected; let tested = await f.tested
         XCTAssertEqual(selected, ["美国一"])
-        XCTAssertEqual(Set(tested), ["日本旧", "日本快", "香港一", "香港二", "美国一"])
+        XCTAssertEqual(Set(tested), ["日本快", "香港一", "香港二", "美国一"])
     }
 
     func testUncheckedBackupsNeverTested() async {
@@ -141,9 +151,9 @@ final class RegionFailoverTests: XCTestCase {
         await prepare(m, enabled: [])
         XCTAssertEqual(m.regions.map(\.code), ["HK", "JP", "US"])
         XCTAssertTrue(m.regions.allSatisfy { !$0.isEnabled })
-        await m.tick()
+        await recover(m)
         let tested = await f.tested; let selected = await f.selected
-        XCTAssertEqual(Set(tested), ["日本旧", "日本快"]); XCTAssertTrue(selected.isEmpty)
+        XCTAssertEqual(Set(tested), ["日本快"]); XCTAssertTrue(selected.isEmpty)
     }
 
     func testPersistenceRetainsMissingRegionsAndAppendsNewRegionsUnchecked() async {
@@ -159,7 +169,7 @@ final class RegionFailoverTests: XCTestCase {
         XCTAssertEqual(restored.regions.last?.code, "SG")
         XCTAssertEqual(restored.regions.last?.isEnabled, false)
         XCTAssertNil(restored.regionNodeCounts["HK"])
-        await restored.tick()
+        await recover(restored)
         let selected = await f.selected
         XCTAssertEqual(selected, ["美国一"])
         await f.configure(failure: true); await restored.refreshRegions()
@@ -171,7 +181,7 @@ final class RegionFailoverTests: XCTestCase {
         for action in 0..<3 {
             let f = RegionFixture(); let m = monitor(f)
             await prepare(m); await f.configure(block: true)
-            let task = Task { await m.tick() }
+            let task = Task { await recover(m) }
             for _ in 0..<200 {
                 if await f.held { break }
                 try await Task.sleep(for: .milliseconds(5))
@@ -191,7 +201,7 @@ final class RegionFailoverTests: XCTestCase {
             let f = RegionFixture(); let m = monitor(f)
             await prepare(m)
             await f.configure(manual: action == 0, changed: action == 1, rule: action == 2)
-            await m.tick()
+            await recover(m)
             let selected = await f.selected
             XCTAssertTrue(selected.isEmpty)
         }

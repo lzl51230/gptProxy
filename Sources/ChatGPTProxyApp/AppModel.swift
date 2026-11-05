@@ -47,7 +47,7 @@ final class AppModel: ObservableObject {
             if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
             phase = .idle
             proxyReachable = false
-            egressLocation = nil
+            codexLatencyMilliseconds = nil
         }
     }
     @Published private(set) var phase: Phase = .idle
@@ -58,7 +58,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var proxyBridgeProfileReady = false
     @Published private(set) var proxyReachable = false
     @Published private(set) var supportsUDP = false
-    @Published private(set) var egressLocation: String?
+    @Published private(set) var codexLatencyMilliseconds: Int?
     @Published private(set) var profileInstallRequiresManualFallback = false
     @Published var showingSetup = false
 
@@ -114,10 +114,7 @@ final class AppModel: ObservableObject {
     }
 
     var localProxyReady: Bool {
-        StatusIssue.localProxyIsReady(
-            reachable: proxyReachable,
-            egressLocation: egressLocation
-        )
+        proxyReachable
     }
 
     func refreshStatus() async {
@@ -137,10 +134,8 @@ final class AppModel: ObservableObject {
             let health = try await ProxyHealthChecker.check(port: port)
             proxyReachable = true
             supportsUDP = health.supportsUDP
-            egressLocation = health.egressLocation
-            if health.egressLocation == "CN" {
-                phase = .failed("代理出口仍位于 CN，请切换节点。")
-            } else if chatGPTNeedsUpdate {
+            codexLatencyMilliseconds = health.codexLatencyMilliseconds
+            if chatGPTNeedsUpdate {
                 phase = .failed(AppError.chatGPTUpdateRequired.localizedDescription)
             } else if !chatGPTInstalled {
                 phase = .failed(AppError.chatGPTMissing.localizedDescription)
@@ -154,7 +149,7 @@ final class AppModel: ObservableObject {
         } catch {
             proxyReachable = false
             supportsUDP = false
-            egressLocation = nil
+            codexLatencyMilliseconds = nil
             phase = .failed(error.localizedDescription)
         }
     }
@@ -198,7 +193,7 @@ final class AppModel: ObservableObject {
     func shutdown() async {
         if repairService.stage == .activating { await cli.stopAndWait() }
         await repairService.finishOrCancel()
-        monitor.stop()
+        await monitor.stopAndWait()
         await cli.stopAndWait()
         await relayLifecycle.stopAndWait()
     }
@@ -308,9 +303,8 @@ final class AppModel: ObservableObject {
         do { profile = try Data(contentsOf: url) }
         catch { throw AppError.launchStepFailed("读取内置规则", error.localizedDescription) }
         let port = try validatedPort()
-        let health = try await ProxyHealthChecker.check(port: port)
+        _ = try await ProxyHealthChecker.check(port: port)
         try Task.checkCancellation()
-        guard health.egressLocation != "CN" else { throw ProxyHealthError.unsupportedRegion(health.egressLocation) }
         try await ensureRelay(upstreamPort: port)
         // The upstream CLI distinguishes another CLI from its GUI and reports conflicts.
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: "com.interceptsuite.ProxyBridge")
@@ -353,12 +347,9 @@ final class AppModel: ObservableObject {
 
 
         let health = try await ProxyHealthChecker.check(port: port)
-        guard health.egressLocation != "CN" else {
-            throw ProxyHealthError.unsupportedRegion(health.egressLocation)
-        }
         proxyReachable = true
         supportsUDP = health.supportsUDP
-        egressLocation = health.egressLocation
+        codexLatencyMilliseconds = health.codexLatencyMilliseconds
 
         try await configureBundledProxyBridgeProfile()
 

@@ -14,7 +14,7 @@ enum StatusIssue: Identifiable, Equatable {
     case proxyBridge
     case networkExtension
     case dedicatedProfile(manualFallback: Bool)
-    case localProxy(port: Int, egressLocation: String?)
+    case localProxy(port: Int)
 
     var id: String {
         switch self {
@@ -33,8 +33,7 @@ enum StatusIssue: Identifiable, Equatable {
         case .proxyBridge: "ProxyBridge 需要修复"
         case .networkExtension: "网络扩展未启用"
         case .dedicatedProfile: "专用配置未启用"
-        case let .localProxy(_, egressLocation):
-            egressLocation == "CN" ? "代理出口地区不可用" : "本地代理不可用"
+        case .localProxy: "Codex 连通检查未通过"
         }
     }
 
@@ -52,12 +51,8 @@ enum StatusIssue: Identifiable, Equatable {
             "请在系统设置的“网络扩展”中启用 ProxyBridge，完成后返回并重新检测。"
         case .dedicatedProfile:
             "由启动器加载内置规则并运行 ProxyBridge CLI；无需导入或选中第三方 profile。失败时请查看代理日志。"
-        case let .localProxy(port, egressLocation):
-            if egressLocation == "CN" {
-                "代理已连接，但出口仍位于 CN。请在代理客户端切换到支持地区的节点。"
-            } else {
-                "请确认代理客户端正在监听 127.0.0.1:\(port)，并检查“设置 → 代理”中的端口是否一致。"
-            }
+        case let .localProxy(port):
+            "请确认代理客户端正在监听 127.0.0.1:\(port)，端口与设置一致，并能访问 Codex 服务。检查无需登录凭据。"
         }
     }
 
@@ -83,9 +78,7 @@ enum StatusIssue: Identifiable, Equatable {
         }
     }
 
-    static func localProxyIsReady(reachable: Bool, egressLocation: String?) -> Bool {
-        reachable && egressLocation != "CN"
-    }
+
 }
 
 enum SystemSettingsDestination {

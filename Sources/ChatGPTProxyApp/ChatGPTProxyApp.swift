@@ -43,10 +43,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var mainWindow = MainWindowController(model: model)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let port = UInt16(exactly: self.model.proxyPort), port > 0 else { return }
+                self.model.monitor.start(port: port)
+            }
+        }
         if LoginLaunchContext.isLoginLaunch(NSAppleEventManager.shared().currentAppleEvent) {
             NSApp.setActivationPolicy(.accessory)
         } else { showMainWindow() }
     }
+    private var wakeObserver: NSObjectProtocol?
+
     func applicationDidBecomeActive(_ notification: Notification) { login.refresh() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -101,7 +111,10 @@ private struct MonitorMenu: View {
     var body: some View {
         Text(monitor.status)
         Text(monitor.currentNode)
-        if let latency = monitor.latency { Text("Google HEAD：\(latency)ms") }
+        if let latency = monitor.latency { Text("Codex 心跳：\(latency)ms") }
+        Text("已验证 \(Int(monitor.connectionSeconds)) 秒 · 未满 60 秒失败 \(monitor.consecutiveFailures)/2")
+        if monitor.phase == .validating { Text("候选长连接验收：\(Int(monitor.connectionSeconds))/10 秒") }
+        if let reason = monitor.disconnectReason { Text("上次断线：\(reason)") }
         Text(monitor.lastSwitch)
         Divider()
         Button("打开主窗口", action: showMainWindow)

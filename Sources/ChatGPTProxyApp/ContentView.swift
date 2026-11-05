@@ -93,10 +93,7 @@ struct ContentView: View {
                 "本地代理",
                 ready: model.localProxyReady,
                 detail: proxyDetail,
-                issue: .localProxy(
-                    port: model.proxyPort,
-                    egressLocation: model.egressLocation
-                )
+                issue: .localProxy(port: model.proxyPort)
             )
         }
     }
@@ -199,7 +196,7 @@ struct ContentView: View {
     private var proxyDetail: String {
         guard model.proxyReachable else { return "不可用" }
         let udp = model.supportsUDP ? "UDP 可用" : "仅 TCP"
-        return "出口 \(model.egressLocation ?? "未知") · \(udp)"
+        return "Codex \(model.codexLatencyMilliseconds.map { "\($0)ms" } ?? "可达") · \(udp)"
     }
 
     private var statusColor: Color {
@@ -270,7 +267,7 @@ private struct RegionSettingsView: View {
 
     var body: some View {
         Section("Clash 备用地区") {
-            Text("当前地区始终优先测试；备用地区从上到下依次测试，选择首个可用地区的最快节点。未勾选时仅在当前地区内切换。")
+            Text("当前地区始终优先测试；备用地区从上到下依次测试，按延迟依次验证候选，长连接保持 10 秒后接受。未勾选时仅在当前地区内切换。")
                 .font(.caption).foregroundStyle(theme.secondary)
             if monitor.regions.isEmpty {
                 Text("尚未发现地区，请连接 Clash Party 后刷新。")
@@ -399,7 +396,17 @@ private struct MonitorStatusView: View {
             }
             Text(monitor.status)
             Text(monitor.currentNode).font(.caption).textSelection(.enabled)
-            if let latency = monitor.latency { Text("Google HEAD · \(latency)ms").monospacedDigit() }
+            if let latency = monitor.latency { Text("Codex 心跳 · \(latency)ms").monospacedDigit() }
+            Text("长连接已验证 \(Int(monitor.connectionSeconds)) 秒 · 未满 60 秒失败 \(monitor.consecutiveFailures)/2")
+                .font(.caption).monospacedDigit()
+            if monitor.phase == .validating {
+                ProgressView(value: min(monitor.connectionSeconds, 10), total: 10)
+                Text("候选需保持 10 秒，期间不会标为恢复成功").font(.caption)
+            }
+            if let reason = monitor.disconnectReason {
+                Text("上次断线：\(reason)").font(.caption).foregroundStyle(theme.secondary).textSelection(.enabled)
+            }
+            Text("无凭据检测仅验证网络与连接保持情况").font(.caption).foregroundStyle(theme.secondary)
             Text(monitor.lastSwitch).font(.caption).foregroundStyle(theme.secondary)
         }
     }

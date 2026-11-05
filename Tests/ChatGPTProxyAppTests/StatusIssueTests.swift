@@ -9,7 +9,7 @@ final class StatusIssueTests: XCTestCase {
         XCTAssertEqual(StatusIssue.dedicatedProfile(manualFallback: false).action, .installProfile)
         XCTAssertEqual(StatusIssue.dedicatedProfile(manualFallback: true).action, .installProfile)
         XCTAssertEqual(
-            StatusIssue.localProxy(port: 7_890, egressLocation: nil).action,
+            StatusIssue.localProxy(port: 7_890).action,
             .refreshStatus
         )
     }
@@ -30,24 +30,18 @@ final class StatusIssueTests: XCTestCase {
     }
 
     func testLocalProxyIssueIncludesTheConfiguredPortWhenUnreachable() {
-        let issue = StatusIssue.localProxy(port: 7_890, egressLocation: nil)
+        let issue = StatusIssue.localProxy(port: 7_890)
 
-        XCTAssertEqual(issue.title, "本地代理不可用")
+        XCTAssertEqual(issue.title, "Codex 连通检查未通过")
         XCTAssertTrue(issue.message.contains("127.0.0.1:7890"))
         XCTAssertEqual(issue.actionTitle, "重新检测")
     }
 
-    func testLocalProxyIssueExplainsUnsupportedChineseExit() {
-        let issue = StatusIssue.localProxy(port: 7_890, egressLocation: "CN")
-
-        XCTAssertEqual(issue.title, "代理出口地区不可用")
-        XCTAssertTrue(issue.message.contains("切换"))
-    }
-
-    func testLocalProxyPassesOnlyWhenReachableOutsideChina() {
-        XCTAssertFalse(StatusIssue.localProxyIsReady(reachable: false, egressLocation: nil))
-        XCTAssertFalse(StatusIssue.localProxyIsReady(reachable: true, egressLocation: "CN"))
-        XCTAssertTrue(StatusIssue.localProxyIsReady(reachable: true, egressLocation: "JP"))
+    func testLocalProxyIssueExplainsCredentialFreeCodexCheck() {
+        let issue = StatusIssue.localProxy(port: 12345)
+        XCTAssertTrue(issue.message.contains("Codex"))
+        XCTAssertTrue(issue.message.contains("无需登录凭据"))
+        XCTAssertTrue(issue.message.contains("12345"))
     }
 
     func testNetworkExtensionSettingsURLUsesTheVersionAppropriatePane() {

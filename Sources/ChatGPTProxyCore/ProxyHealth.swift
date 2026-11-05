@@ -3,34 +3,35 @@ import Foundation
 
 public struct ProxyHealthResult: Sendable, Equatable {
     public let supportsUDP: Bool
-    public let egressLocation: String
+    public let codexLatencyMilliseconds: Int
 
-    public init(supportsUDP: Bool, egressLocation: String) {
+    public init(supportsUDP: Bool, codexLatencyMilliseconds: Int) {
         self.supportsUDP = supportsUDP
-        self.egressLocation = egressLocation
+        self.codexLatencyMilliseconds = codexLatencyMilliseconds
     }
 }
 
 public enum ProxyHealthChecker {
     public static func check(port: UInt16) async throws -> ProxyHealthResult {
-        try await Task.detached(priority: .userInitiated) {
-            let supportsUDP = try SOCKS5Probe.probe(port: port)
-            let trace = try CurlRunner.cloudflareTrace(port: port)
-            let location = try EgressLocationParser.location(from: trace)
-            return ProxyHealthResult(supportsUDP: supportsUDP, egressLocation: location)
-        }.value
+        try await check(port: port, connection: CodexConnectionSession(port: port))
     }
-}
 
-public enum EgressLocationParser {
-    public static func location(from trace: String) throws -> String {
-        for line in trace.split(whereSeparator: \Character.isNewline) {
-            guard line.hasPrefix("loc=") else { continue }
-            let value = line.dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { break }
-            return value.uppercased()
+    static func check(port: UInt16, connection: any CodexConnection) async throws -> ProxyHealthResult {
+        let supportsUDP = try await Task.detached(priority: .userInitiated) {
+            try SOCKS5Probe.probe(port: port)
+        }.value
+        try Task.checkCancellation()
+        do {
+            let heartbeat = try await connection.heartbeat()
+            await connection.close()
+            guard heartbeat.isHealthy, let latency = heartbeat.latencyMilliseconds else {
+                throw MonitorError.message(heartbeat.failureReason ?? "无法通过代理连接 Codex")
+            }
+            return ProxyHealthResult(supportsUDP: supportsUDP, codexLatencyMilliseconds: latency)
+        } catch {
+            await connection.close()
+            throw error
         }
-        throw ProxyHealthError.missingEgressLocation
     }
 }
 
@@ -52,9 +53,6 @@ public enum ProxyHealthError: LocalizedError {
     case writeFailed
     case unexpectedSOCKS5Reply
     case udpAssociateRejected(UInt8)
-    case curlFailed(String)
-    case missingEgressLocation
-    case unsupportedRegion(String)
 
     public var errorDescription: String? {
         switch self {
@@ -68,12 +66,6 @@ public enum ProxyHealthError: LocalizedError {
             "该端口没有返回有效的 SOCKS5 响应。"
         case let .udpAssociateRejected(code):
             "本地代理不支持 UDP Associate（错误码 \(code)）。"
-        case let .curlFailed(message):
-            "无法通过代理检测出口：\(message)"
-        case .missingEgressLocation:
-            "代理响应中没有出口地区信息。"
-        case let .unsupportedRegion(region):
-            "代理出口仍位于不支持的地区（\(region)）。"
         }
     }
 }
@@ -134,35 +126,5 @@ private enum SOCKS5Probe {
             received += current
         }
         return bytes
-    }
-}
-
-private enum CurlRunner {
-    static func cloudflareTrace(port: UInt16) throws -> String {
-        let process = Process()
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = [
-            "--disable",
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--max-time", "10",
-            "--proxy", "socks5h://127.0.0.1:\(port)",
-            "https://www.cloudflare.com/cdn-cgi/trace",
-        ]
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-        try process.run()
-        process.waitUntilExit()
-
-        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
-        let error = standardError.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else {
-            let message = String(decoding: error, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw ProxyHealthError.curlFailed(message.isEmpty ? "curl 退出码 \(process.terminationStatus)" : message)
-        }
-        return String(decoding: output, as: UTF8.self)
     }
 }
