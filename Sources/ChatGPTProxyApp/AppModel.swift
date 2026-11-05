@@ -445,18 +445,11 @@ final class AppModel: ObservableObject {
     }
 
     private func restartChatGPT() async throws {
-        runningChatGPTApplications().forEach { $0.terminate() }
-        for _ in 0..<30 {
-            if runningChatGPTApplications().isEmpty {
-                break
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        guard runningChatGPTApplications().isEmpty else {
-            throw AppError.chatGPTDidNotTerminate
-        }
-        try checkOperationCancellation()
-        try await openApplication(at: Self.chatGPTURL, activates: true)
+        try await GPTApplicationLifecycle.restart(
+            requestTermination: { self.runningChatGPTApplications().forEach { $0.terminate() } },
+            isRunning: { !self.runningChatGPTApplications().isEmpty },
+            launch: { try await self.openApplication(at: Self.chatGPTURL, activates: true) },
+            checkCancellation: { try self.checkOperationCancellation() })
     }
 
     private func runningChatGPTApplications() -> [NSRunningApplication] {
@@ -505,7 +498,7 @@ enum AppError: LocalizedError, Equatable {
         case .extensionDisabled:
             "请在系统设置中允许 ProxyBridge 网络扩展，然后重试。"
         case .chatGPTDidNotTerminate:
-            "现有 ChatGPT 未能在 3 秒内退出，已中止启动。请手动退出后重试。"
+            "现有 ChatGPT 未能在 \(Int(GPTApplicationLifecycle.terminationTimeout)) 秒内退出，已中止启动。请手动退出后重试。"
         case let .unsupportedProxyBridgeVersion(version):
             "自动配置仅支持 ProxyBridge \(ProxyBridgeCLIController.supportedVersion)，当前版本为 \(version ?? "未知")。请通过命令行安装器升级。"
         case .profileResourceMissing:
