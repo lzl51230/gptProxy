@@ -16,8 +16,8 @@ final class MainWindowController {
             let window = NSWindow(contentViewController: controller)
             window.title = "ChatGPT Proxy"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setContentSize(NSSize(width: 580, height: 680))
-            window.contentMinSize = NSSize(width: 520, height: 620)
+            window.setContentSize(NSSize(width: 620, height: 740))
+            window.contentMinSize = NSSize(width: 600, height: 700)
             window.isReleasedWhenClosed = false
             window.center()
             self.window = window

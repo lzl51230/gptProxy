@@ -3,9 +3,9 @@ import CryptoKit
 import Combine
 
 public enum ProxyBridgeRelease {
-    public static let version = "4.1.0"
-    public static let downloadURL = URL(string: "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.1.0_MacOS/ProxyBridge-v4.1.0-Universal-Installer.pkg")!
-    public static let sha256 = "c375fff53349f009e7bedacb47528642041776f859f58972bfad02b190ef7dec"
+    public static let version = "4.1.1"
+    public static let downloadURL = URL(string: "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.1.1_MacOS/ProxyBridge-v4.1.1-Universal-Installer.pkg")!
+    public static let sha256 = "7ffebe7ada4226567dcd4f7c8e7009d2ad0ef2afa4bc7a8525e2a9ddc0dd8c68"
     public static let teamIdentifier = "L4HJT32Z59"
     public static let applicationURL = URL(fileURLWithPath: "/Applications/ProxyBridge.app")
 }

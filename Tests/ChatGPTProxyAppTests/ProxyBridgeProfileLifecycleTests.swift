@@ -9,7 +9,7 @@ final class ProfileConfigurationModelTests: XCTestCase {
         var errorDescription: String? { "profile setup failed" }
     }
 
-    func testSuccessfulProfileConfigurationClearsFallbackAndEndsReady() async {
+    func testSuccessfulProfileConfigurationDoesNotClaimReadyBeforeDNSProtection() async {
         var refreshed = false
         let model = AppModel(
             profileConfigurator: {},
@@ -18,7 +18,7 @@ final class ProfileConfigurationModelTests: XCTestCase {
 
         await model.installAndActivateBundledProfile()
 
-        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(model.phase, .idle)
         XCTAssertFalse(model.profileInstallRequiresManualFallback)
         XCTAssertTrue(refreshed)
     }

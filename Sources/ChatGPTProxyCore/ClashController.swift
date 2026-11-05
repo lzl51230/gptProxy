@@ -23,17 +23,25 @@ private final class CurlProcess: @unchecked Sendable {
         if let running, running.isRunning { running.terminate() }
     }
 
-    func run(_ arguments: [String], timeout: Int) throws -> Data {
+    func run(_ arguments: [String], timeout: Int, input: Data?) throws -> Data {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         child.arguments = ["--disable", "--silent", "--noproxy", "*", "--max-time", String(timeout)] + arguments
         let output = Pipe()
+        let stdin = Pipe()
+        child.standardInput = input == nil ? FileHandle.nullDevice : stdin.fileHandleForReading
         child.standardOutput = output
         child.standardError = FileHandle.nullDevice
         lock.lock()
         if cancelled { lock.unlock(); throw CancellationError() }
         do { try child.run(); process = child; lock.unlock() }
         catch { lock.unlock(); throw error }
+        if let input {
+            // Configuration payloads contain credentials; never put them in argv.
+            do { try stdin.fileHandleForWriting.write(contentsOf: input) }
+            catch { child.terminate() }
+            try? stdin.fileHandleForWriting.close()
+        }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         child.waitUntilExit()
         lock.lock(); let wasCancelled = cancelled; process = nil; lock.unlock()
@@ -48,10 +56,10 @@ private final class CurlProcess: @unchecked Sendable {
 public enum MonitorHTTP {
     public static let testURL = CodexConnectionSession.targetURL
 
-    public static func run(_ arguments: [String], timeout: Int = 2) async throws -> Data {
+    public static func run(_ arguments: [String], timeout: Int = 2, input: Data? = nil) async throws -> Data {
         let runner = CurlProcess()
         return try await withTaskCancellationHandler {
-            try await Task.detached(priority: .utility) { try runner.run(arguments, timeout: timeout) }.value
+            try await Task.detached(priority: .utility) { try runner.run(arguments, timeout: timeout, input: input) }.value
         } onCancel: { runner.cancel() }
     }
 }
@@ -93,8 +101,8 @@ public struct ClashControllerClient: Sendable {
     public init() {}
     public func request(socket: String, path: String, method: String = "GET", body: Data? = nil, timeout: Int = 2) async throws -> Data {
         var args = ["--unix-socket", socket, "--request", method, "--write-out", "\n%{http_code}", "http://localhost" + path]
-        if let body { args += ["--header", "Content-Type: application/json", "--data-binary", String(decoding: body, as: UTF8.self)] }
-        let response = try await MonitorHTTP.run(args, timeout: timeout)
+        if body != nil { args += ["--header", "Content-Type: application/json", "--data-binary", "@-"] }
+        let response = try await MonitorHTTP.run(args, timeout: timeout, input: body)
         guard let split = response.lastIndex(of: 10),
               let status = Int(String(decoding: response[response.index(after: split)...], as: UTF8.self)),
               (200..<300).contains(status) else { throw MonitorError.message("Clash 控制接口请求失败") }
@@ -126,6 +134,17 @@ public struct ClashControllerClient: Sendable {
         return match
     }
 
+    public func snapshot(socket: String, port: UInt16) async throws -> ClashSnapshot {
+        let general = try await request(socket: socket, path: "/configs")
+        guard let config = try JSONSerialization.jsonObject(with: general) as? [String: Any],
+              ["mixed-port", "socks-port"].contains(where: { config[$0] as? Int == Int(port) }) else {
+            throw MonitorError.message("Clash 代理端口已更改")
+        }
+        struct Response: Decodable { let proxies: [String: ClashProxy] }
+        let proxies = try JSONDecoder().decode(Response.self, from: await request(socket: socket, path: "/proxies"))
+        return .init(socket: socket, mode: config["mode"] as? String ?? "", proxies: proxies.proxies)
+    }
+
     private func encoded(_ name: String) -> String {
         name.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
     }
@@ -151,6 +170,43 @@ public struct ClashControllerClient: Sendable {
 
     public func close(socket: String, id: String) async throws {
         _ = try await request(socket: socket, path: "/connections/" + encoded(id), method: "DELETE")
+    }
+
+    public func reload(socket: String, yaml: String) async throws {
+        _ = try await request(socket: socket, path: "/configs?force=false", method: "PUT",
+                              body: JSONEncoder().encode(["payload": yaml]), timeout: 10)
+    }
+
+    public func selection(socket: String) async throws -> [String: String] {
+        struct Response: Decodable { let proxies: [String: ClashProxy] }
+        let proxies = try JSONDecoder().decode(Response.self, from: await request(socket: socket, path: "/proxies")).proxies
+        return proxies.reduce(into: [:]) { result, item in
+            if item.value.type.caseInsensitiveCompare("Selector") == .orderedSame,
+               let now = item.value.now { result[item.key] = now }
+        }
+    }
+
+    public func restoreSelection(socket: String, selection: [String: String]) async throws {
+        for (group, name) in selection.sorted(by: { $0.key < $1.key }) {
+            _ = try await request(socket: socket, path: "/proxies/\(encoded(group))", method: "PUT",
+                                  body: JSONEncoder().encode(["name": name]))
+        }
+    }
+
+    public func flushDNS(socket: String) async throws {
+        _ = try await request(socket: socket, path: "/cache/dns/flush", method: "POST")
+    }
+
+    public func closeDNSConnections(socket: String) async throws {
+        struct Metadata: Decodable { let destinationIP: String?; let destinationPort: String? }
+        struct Connection: Decodable { let id: String; let chains: [String]; let metadata: Metadata }
+        struct Response: Decodable { let connections: [Connection]? }
+        let result = try JSONDecoder().decode(Response.self, from: await request(socket: socket, path: "/connections"))
+        for connection in result.connections ?? [] where connection.chains.contains("GLOBAL")
+            && ["1.1.1.1", "8.8.8.8"].contains(connection.metadata.destinationIP ?? "")
+            && connection.metadata.destinationPort == "443" {
+            try await close(socket: socket, id: connection.id)
+        }
     }
 }
 

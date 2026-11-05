@@ -138,7 +138,7 @@ final class ProxyBridgeInstallationTests: XCTestCase {
         }
         try version("4.0.0")
         XCTAssertEqual(ProxyBridgeInstallationStatus.inspect(at: root), .incompatible("4.0.0"))
-        try version("4.1.0")
+        try version("4.1.1")
         guard case .unusable = ProxyBridgeInstallationStatus.inspect(at: root) else { return XCTFail() }
         let binary = root.appendingPathComponent("Contents/MacOS/ProxyBridge")
         try Data().write(to: binary)

@@ -5,7 +5,7 @@ public enum ProxyConfiguration {
     public static let relayPort: UInt16 = 17890
 
     public static func validatedPort(_ value: String) throws -> UInt16 {
-        guard let port = UInt16(value), port > 0, port != relayPort else {
+        guard let port = UInt16(value), port > 0, ![relayPort, DNSProtectionConfiguration.clashDNSPort, 53].contains(port) else {
             throw ProxyConfigurationError.invalidPort
         }
         return port
@@ -16,7 +16,7 @@ public enum ProxyConfigurationError: LocalizedError {
     case invalidPort
 
     public var errorDescription: String? {
-        "端口必须是 1 到 65535 之间的数字，且不能使用内部端口 \(ProxyConfiguration.relayPort)。"
+        "端口必须是 1 到 65535 之间的数字，且不能使用 DNS 端口 53、17853 或内部中继端口 \(ProxyConfiguration.relayPort)。"
     }
 }
 

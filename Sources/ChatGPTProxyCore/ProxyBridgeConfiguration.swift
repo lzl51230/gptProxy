@@ -4,6 +4,7 @@ public enum ProxyBridgeConfigurationParser {
     public static func isBundledProfileValid(_ data: Data) -> Bool {
         guard let profile = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               profile["name"] as? String == "ChatGPT Only",
+              profile["dnsEnabled"] as? Bool == false,
               let configs = profile["proxyConfigs"],
               let encoded = try? JSONSerialization.data(withJSONObject: configs)
         else { return false }

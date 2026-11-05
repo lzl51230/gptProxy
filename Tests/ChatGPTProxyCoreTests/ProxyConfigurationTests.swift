@@ -12,7 +12,7 @@ final class ProxyConfigurationTests: XCTestCase {
     }
 
     func testRejectsInvalidAndReservedPorts() {
-        for value in ["", "0", "65536", "abc", "17890"] {
+        for value in ["", "0", "65536", "abc", "17890", "17853", "53"] {
             XCTAssertThrowsError(try ProxyConfiguration.validatedPort(value), value)
         }
     }

@@ -18,8 +18,14 @@ swift test
 /usr/bin/codesign --verify --deep --strict "$APP_DIR"
 ARCHITECTURES=$(/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/ChatGPTProxyLauncher")
 [[ "$ARCHITECTURES" == *arm64* && "$ARCHITECTURES" == *x86_64* ]]
+HELPER="$APP_DIR/Contents/Resources/DNSProtectionHelper"
+[[ -x "$HELPER" && "$("$HELPER" --version)" == 1 ]]
+/usr/bin/codesign --verify --strict "$HELPER"
+HELPER_ARCHITECTURES=$(/usr/bin/lipo -archs "$HELPER")
+[[ "$HELPER_ARCHITECTURES" == *arm64* && "$HELPER_ARCHITECTURES" == *x86_64* ]]
 
 /usr/bin/jq -e '
+    .dnsEnabled == false and
     (.proxyConfigs | length) == 1 and
     .proxyConfigs[0].id == "chatgpt-proxy-relay" and
     .proxyConfigs[0].host == "127.0.0.1" and
@@ -54,6 +60,7 @@ EXTRACTED_APP="$VERIFY_ROOT/ChatGPT Proxy.app"
 /usr/bin/codesign --verify --deep --strict "$EXTRACTED_APP"
 /usr/bin/cmp "$APP_DIR/Contents/MacOS/ChatGPTProxyLauncher" "$EXTRACTED_APP/Contents/MacOS/ChatGPTProxyLauncher"
 /usr/bin/cmp "$PROFILE" "$EXTRACTED_APP/Contents/Resources/ChatGPT-Only.pbprofile"
+/usr/bin/cmp "$HELPER" "$EXTRACTED_APP/Contents/Resources/DNSProtectionHelper"
 [[ -z "$(/usr/bin/find "$VERIFY_ROOT" -name '*.pkg' -o -name 'ProxyBridge.app')" ]]
 [[ -z "$(/usr/bin/find "$PROJECT_DIR/dist" -maxdepth 1 -name '*.pkg' -o -name 'install.sh')" ]]
 print "Verified tests, profile isolation, signatures, universal architectures, and app-only ZIP."

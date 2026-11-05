@@ -1,5 +1,6 @@
 {
   "closeToMenuBar" : true,
+  "dnsEnabled" : false,
   "name" : "ChatGPT Only",
   "proxyConfigs" : [
     {

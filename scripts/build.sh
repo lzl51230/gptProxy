@@ -24,6 +24,12 @@ if [[ -z "$ARM_BINARY" || -z "$INTEL_BINARY" ]]; then
 fi
 
 /usr/bin/lipo -create "$ARM_BINARY" "$INTEL_BINARY" -output "$MACOS_DIR/ChatGPTProxyLauncher"
+ARM_HELPER=$(find "$BUILD_DIR/arm64" -type f -path '*/release/DNSProtectionHelper' -perm +111 -print -quit)
+INTEL_HELPER=$(find "$BUILD_DIR/x86_64" -type f -path '*/release/DNSProtectionHelper' -perm +111 -print -quit)
+[[ -n "$ARM_HELPER" && -n "$INTEL_HELPER" ]]
+/usr/bin/lipo -create "$ARM_HELPER" "$INTEL_HELPER" -output "$RESOURCES_DIR/DNSProtectionHelper"
+/bin/chmod 755 "$RESOURCES_DIR/DNSProtectionHelper"
+/usr/bin/codesign --force --sign - "$RESOURCES_DIR/DNSProtectionHelper"
 /bin/chmod 755 "$MACOS_DIR/ChatGPTProxyLauncher"
 /bin/cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
 /bin/cp "$PROJECT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"

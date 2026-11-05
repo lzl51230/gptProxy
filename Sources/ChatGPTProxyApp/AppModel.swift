@@ -36,6 +36,8 @@ final class AppModel: ObservableObject {
     let monitor = AutoSwitchMonitor()
     let cli = ProxyBridgeCLIController()
     let repairService = ProxyBridgeRepairService()
+    let dns = DNSProtectionController()
+    private var dnsObservation: AnyCancellable?
     private var repairObservation: AnyCancellable?
     private var cliObservation: AnyCancellable?
 
@@ -44,6 +46,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard proxyPort != oldValue else { return }
             guard activeOperation == nil else { return }
+            Task { try? await dns.restore() }
             if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
             phase = .idle
             proxyReachable = false
@@ -67,6 +70,7 @@ final class AppModel: ObservableObject {
     private let refreshAfterProfileConfiguration: (@MainActor () async -> Void)?
     private let relayLifecycle = RelayLifecycle()
     @Published private var activeOperation: UUID?
+    private var operationCancelled = false
 
     static let chatGPTURL = URL(fileURLWithPath: "/Applications/ChatGPT.app", isDirectory: true)
     static let proxyBridgeURL = URL(fileURLWithPath: "/Applications/ProxyBridge.app", isDirectory: true)
@@ -79,6 +83,13 @@ final class AppModel: ObservableObject {
         self.refreshAfterProfileConfiguration = refreshAfterProfileConfiguration
         let stored = defaults.integer(forKey: "proxyPort")
         proxyPort = stored > 0 ? stored : Int(ProxyConfiguration.defaultProxyPort)
+        dnsObservation = dns.$status.sink { [weak self] value in
+            guard let self else { return }
+            self.objectWillChange.send()
+            if !value.isEnabled, self.phase == .ready {
+                self.phase = .failed(value.detail)
+            }
+        }
         cliObservation = cli.$state.sink { [weak self] state in
             guard let self else { return }
             self.proxyBridgeProfileReady = state == .running
@@ -120,6 +131,7 @@ final class AppModel: ObservableObject {
     func refreshStatus() async {
         guard let operation = beginOperation(phase: .checking) else { return }
         defer { endOperation(operation) }
+        await dns.refresh()
 
         updateInstalledApps()
         extensionEnabled = await SystemExtensionChecker.proxyBridgeIsEnabled()
@@ -143,6 +155,8 @@ final class AppModel: ObservableObject {
                 phase = .failed("ProxyBridge 网络扩展尚未启用。")
             } else if !proxyBridgeProfileReady {
                 phase = .failed("代理尚未运行，请启用代理。")
+            } else if !dns.status.isEnabled {
+                phase = .failed(dns.status.detail)
             } else {
                 phase = .ready
             }
@@ -186,16 +200,43 @@ final class AppModel: ObservableObject {
         !repairService.isBusy || repairService.canCancel
     }
     func cancelProxyStartup() async {
+        operationCancelled = true
+        try? await dns.restore()
         if repairService.isBusy { repairService.cancel() }
         if !repairService.isBusy || repairService.stage == .activating { await cli.stopAndWait() }
     }
 
     func shutdown() async {
+        operationCancelled = true
+        do { try await dns.restore() }
+        catch { phase = .failed(error.localizedDescription) }
         if repairService.stage == .activating { await cli.stopAndWait() }
         await repairService.finishOrCancel()
         await monitor.stopAndWait()
         await cli.stopAndWait()
         await relayLifecycle.stopAndWait()
+    }
+
+    func enableDNSProtection() async {
+        guard let operation = beginOperation(phase: .configuringProfile) else { return }
+        defer { endOperation(operation) }
+        do {
+            try await configureBundledProxyBridgeProfile()
+            try checkOperationCancellation()
+            await monitor.stopAndWait()
+            let port = try validatedPort()
+            defer { monitor.start(port: port) }
+            try await dns.enable(port: port, beforeActivation: { try self.checkOperationCancellation() })
+            if operationCancelled { try await dns.restore(); throw CancellationError() }
+            phase = .ready
+        } catch { phase = .failed(error.localizedDescription) }
+    }
+
+    func restoreDNSProtection() async {
+        guard let operation = beginOperation(phase: .checking) else { return }
+        defer { endOperation(operation) }
+        do { try await dns.restore(); phase = .idle }
+        catch { phase = .failed(error.localizedDescription) }
     }
 
     func openNetworkExtensionSettings() {
@@ -227,6 +268,7 @@ final class AppModel: ObservableObject {
             do {
                 let port = try validatedPort()
                 try await repairService.repair(proxyPort: port, beforeInstall: {
+                    try await self.dns.restore()
                     await self.cli.stopAndWait()
                     await self.relayLifecycle.stopAndWait()
                 }, activate: {
@@ -271,7 +313,7 @@ final class AppModel: ObservableObject {
                 try await configureBundledProxyBridgeProfile()
             }
             profileInstallRequiresManualFallback = false
-            phase = .ready
+            phase = dns.status.isEnabled ? .ready : .idle
             endOperation(operation)
             if let refreshAfterProfileConfiguration {
                 await refreshAfterProfileConfiguration()
@@ -352,6 +394,13 @@ final class AppModel: ObservableObject {
         codexLatencyMilliseconds = health.codexLatencyMilliseconds
 
         try await configureBundledProxyBridgeProfile()
+        try checkOperationCancellation()
+
+        await monitor.stopAndWait()
+        do { try await dns.enable(port: port, beforeActivation: { try self.checkOperationCancellation() }) }
+        catch { monitor.start(port: port); throw error }
+        monitor.start(port: port)
+        if operationCancelled { try await dns.restore(); throw CancellationError() }
 
         try await restartChatGPT()
     }
@@ -360,8 +409,14 @@ final class AppModel: ObservableObject {
         guard activeOperation == nil else { return nil }
         let operation = UUID()
         activeOperation = operation
+        operationCancelled = false
         phase = newPhase
         return operation
+    }
+
+    private func checkOperationCancellation() throws {
+        try Task.checkCancellation()
+        if operationCancelled { throw CancellationError() }
     }
 
     private func endOperation(_ operation: UUID) {

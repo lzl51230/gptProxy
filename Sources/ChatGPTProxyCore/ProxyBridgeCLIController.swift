@@ -10,16 +10,19 @@ public struct ProxyBridgeCLIOutput: Sendable {
     public private(set) var versionMatches = false
     public private(set) var profileApplied = false
     public private(set) var redirecting = false
+    public private(set) var dnsDisabled = false
     public private(set) var waitingForApproval = false
     public private(set) var failure: String?
-    public var isReady: Bool { versionMatches && profileApplied && redirecting && failure == nil }
+    public var isReady: Bool { versionMatches && profileApplied && redirecting && dnsDisabled && failure == nil }
     public init() {}
     public mutating func consume(_ line: String) {
         if line == "ProxyBridge CLI \(ProxyBridgeRelease.version)" { versionMatches = true }
         if line == "Profile \"ChatGPT Only\": 1 proxies, 2 rules applied" { profileApplied = true }
         if line == "Redirecting traffic. Press Ctrl+C to stop." { redirecting = true }
+        if line == "DNS proxy: off (host name rules and send hostname do not work)" { dnsDisabled = true }
         if line.contains("waiting for your approval") { waitingForApproval = true }
-        if line.hasPrefix("ERROR:") || line.contains("rule(s) were rejected") || line.contains("will go direct") {
+        if line.hasPrefix("ERROR:") || line.contains("rule(s) were rejected") || line.contains("will go direct")
+            || line.contains("Could not switch the DNS proxy off") {
             failure = line
         }
     }
