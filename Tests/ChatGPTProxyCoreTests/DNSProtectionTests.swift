@@ -35,7 +35,12 @@ final class DNSProtectionTests: XCTestCase {
         XCTAssertEqual((dns["nameserver-policy"] as? [String: Any])?.count, 0)
         XCTAssertEqual((dns["proxy-server-nameserver-policy"] as? [String: Any])?.count, 0)
         XCTAssertEqual(dns["proxy-server-nameserver"] as? [String], ["https://dns.alidns.com/dns-query"])
-        for key in ["proxies", "proxy-groups", "rules", "tun"] {
+        XCTAssertEqual(result["ipv6"] as? Bool, false)
+        XCTAssertEqual(dns["ipv6"] as? Bool, false)
+        var node = try XCTUnwrap((result["proxies"] as? [[String: Any]])?.first)
+        XCTAssertEqual(node.removeValue(forKey: "ip-version") as? String, "ipv4")
+        XCTAssertEqual(NSDictionary(dictionary: node), NSDictionary(dictionary: (original["proxies"] as! [[String: Any]])[0]))
+        for key in ["proxy-groups", "rules", "tun"] {
             XCTAssertEqual(NSDictionary(dictionary: [key: result[key]!]), NSDictionary(dictionary: [key: original[key]!]))
         }
     }
@@ -44,6 +49,8 @@ final class DNSProtectionTests: XCTestCase {
         for source in [
             fixture.replacingOccurrences(of: "tls://223.5.5.5", with: "223.5.5.5"),
             fixture.replacingOccurrences(of: "tls://223.5.5.5", with: "tls://bootstrap.example"),
+            fixture.replacingOccurrences(of: "tls://223.5.5.5", with: "tls://[2606:4700:4700::1111]"),
+            fixture.replacingOccurrences(of: "https://dns.alidns.com/dns-query", with: "https://[2606:4700:4700::1111]/dns-query"),
             fixture.replacingOccurrences(of: "https://dns.alidns.com/dns-query", with: "system"),
             fixture.replacingOccurrences(of: "https://dns.alidns.com/dns-query", with: "https://1.1.1.1/dns-query#GLOBAL"),
             fixture.replacingOccurrences(of: "mode: global", with: "mode: rule"),
@@ -58,6 +65,73 @@ final class DNSProtectionTests: XCTestCase {
         XCTAssertEqual(restored["mixed-port"] as? Int, 8890)
         XCTAssertEqual(restored["ipv6"] as? Bool, true)
         XCTAssertEqual((restored["dns"] as? [String: Any])?["nameserver"] as? [String], ["223.5.5.5"])
+    }
+
+    func testIPv4PolicyOverridesAllNodesAndProvidersWithoutDroppingOtherOptions() throws {
+        let source = fixture + """
+
+        ipv6: true
+        proxy-providers:
+          existing:
+            type: inline
+            payload: []
+            override: {ip-version: ipv6, udp: true, tfo: true}
+          fresh: {type: inline, payload: []}
+        """
+        let result = try XCTUnwrap(Yams.load(yaml: DNSProtectionConfiguration.protectedYAML(source)) as? [String: Any])
+        let providers = try XCTUnwrap(result["proxy-providers"] as? [String: [String: Any]])
+        for provider in providers.values { XCTAssertEqual((provider["override"] as? [String: Any])?["ip-version"] as? String, "ipv4") }
+        let override = providers["existing"]?["override"] as? [String: Any]
+        XCTAssertEqual(override?["udp"] as? Bool, true)
+        XCTAssertEqual(override?["tfo"] as? Bool, true)
+        XCTAssertEqual(result["ipv6"] as? Bool, false)
+    }
+
+    func testRecoveryRestoresOwnedIPv6AndPreservesLaterUserChanges() throws {
+        for (original, current, expected) in [(true, false, true), (false, false, false), (false, true, true)] {
+            let general = try JSONSerialization.data(withJSONObject: ["ipv6": current, "mode": "rule"])
+            let yaml = try DNSProtectionConfiguration.restoredYAML(fixture, general: general, originalIPv6: original,
+                ipv4PolicyApplied: true, sourceChanged: false)
+            let result = try XCTUnwrap(Yams.load(yaml: yaml) as? [String: Any])
+            XCTAssertEqual(result["ipv6"] as? Bool, expected)
+            XCTAssertEqual(result["mode"] as? String, "rule")
+            XCTAssertNil((result["proxies"] as? [[String: Any]])?.first?["ip-version"])
+        }
+    }
+
+    func testRecoveryUsesNewSourceIPv6PolicyIncludingOmittedDefault() throws {
+        let general = Data(#"{"ipv6":false,"mixed-port":8890}"#.utf8)
+        for suffix in ["\nipv6: true\n", "\nipv6: false\n", ""] {
+            let source = fixture + suffix
+            let yaml = try DNSProtectionConfiguration.restoredYAML(source, general: general, originalIPv6: true,
+                ipv4PolicyApplied: true, sourceChanged: true)
+            let result = try XCTUnwrap(Yams.load(yaml: yaml) as? [String: Any])
+            let original = try XCTUnwrap(Yams.load(yaml: source) as? [String: Any])
+            XCTAssertEqual(result["ipv6"] as? Bool, original["ipv6"] as? Bool)
+            XCTAssertEqual(result["mixed-port"] as? Int, 8890)
+        }
+    }
+
+    func testLegacyRecoveryDoesNotApplyAnIPv4BaselineItNeverOwned() throws {
+        let yaml = try DNSProtectionConfiguration.restoredYAML(fixture, general: Data(#"{"ipv6":true}"#.utf8),
+            originalIPv6: nil, ipv4PolicyApplied: false, sourceChanged: false)
+        XCTAssertEqual((try Yams.load(yaml: yaml) as? [String: Any])?["ipv6"] as? Bool, true)
+    }
+
+    func testIPv4ProbeRejectsAAAAAnswersAndFailedOrEmptyAResolution() throws {
+        let aQuery = DNSPacket.query(name: "one.one.one.one", id: 1)
+        let aaaaQuery = DNSPacket.query(name: "one.one.one.one", type: 28, id: 2)
+        var a = aQuery, aaaa = aaaaQuery
+        a[2] = 0x81; a[3] = 0x80; a[7] = 1
+        a.append(contentsOf: [0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 1, 1, 1, 1])
+        aaaa[2] = 0x81; aaaa[3] = 0x80
+        XCTAssertNoThrow(try DNSPacket.assertIPv4Responses(a: a, aQuery: aQuery, aaaa: aaaa, aaaaQuery: aaaaQuery))
+        var bad = aaaa; bad[7] = 1
+        XCTAssertThrowsError(try DNSPacket.assertIPv4Responses(a: a, aQuery: aQuery, aaaa: bad, aaaaQuery: aaaaQuery))
+        bad = aaaa; bad[3] = 0x83
+        XCTAssertThrowsError(try DNSPacket.assertIPv4Responses(a: a, aQuery: aQuery, aaaa: bad, aaaaQuery: aaaaQuery))
+        a[7] = 0
+        XCTAssertThrowsError(try DNSPacket.assertIPv4Responses(a: a, aQuery: aQuery, aaaa: aaaa, aaaaQuery: aaaaQuery))
     }
 
     func testRestoresDHCPWithoutWritingOldDHCPAddressesAsStaticServers() {

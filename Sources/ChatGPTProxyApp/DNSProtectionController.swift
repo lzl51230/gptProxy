@@ -11,7 +11,11 @@ final class DNSProtectionController: ObservableObject {
     private let client = ClashControllerClient()
 
     func refresh() async {
-        do { status = try await DNSProtectionIPC.request(.init(command: status.isEnabled ? .heartbeat : .status)) }
+        do {
+            let response = try await DNSProtectionIPC.request(.init(command: status.isEnabled ? .heartbeat : .status))
+            status = response.isEnabled && response.version != DNSProtectionConfiguration.version
+                ? .init(phase: .failed, detail: "辅助服务需要升级，请重新启用 DNS / IPv4 保护") : response
+        }
         catch {
             if status.isEnabled { status = .init(phase: .failed, detail: "DNS 辅助服务失去响应，正在自动恢复") }
         }
@@ -38,7 +42,7 @@ final class DNSProtectionController: ObservableObject {
                 throw MonitorError.message("Clash 配置已更改，请重新启用 DNS 保护")
             }
             status = try await DNSProtectionIPC.request(.init(command: .enable, port: port, socket: snapshot.socket, yaml: yaml, sourceGeneration: generation))
-            guard status.isEnabled else { throw MonitorError.message(status.detail) }
+            guard status.isEnabled, status.version == DNSProtectionConfiguration.version else { throw MonitorError.message(status.detail) }
             startPolling()
         } catch {
             status = .init(phase: .failed, detail: "DNS 保护未启用：\(error.localizedDescription)")

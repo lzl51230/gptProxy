@@ -44,7 +44,7 @@ public enum ProxyBridgeConfigurationParser {
         else {
             return false
         }
-        return decodedConfigs == [.chatGPTRelay] && decodedRules == [.localDirect, .externalProxy]
+        return decodedConfigs == [.chatGPTRelay] && decodedRules == [.localDirect, .ipv6Block, .externalProxy]
     }
 
     private static func decodeRules(from value: Any?) -> [ProxyRule]? {
@@ -122,6 +122,16 @@ private struct ProxyRule: Decodable, Equatable {
         targetPorts: "*",
         ruleProtocol: "TCP",
         action: "DIRECT",
+        enabled: true
+    )
+
+    // UDP destination filters are ignored by ProxyBridge 4.1.1. Never use BOTH here.
+    static let ipv6Block = ProxyRule(
+        processNames: ChatGPTApplicationCompatibility.proxyBridgeProcessNames,
+        targetHosts: "::/0",
+        targetPorts: "*",
+        ruleProtocol: "TCP",
+        action: "BLOCK",
         enabled: true
     )
 

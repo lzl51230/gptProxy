@@ -8,9 +8,9 @@ final class ProxyBridgeCLIOutputTests: XCTestCase {
         output.consume("Redirecting traffic. Press Ctrl+C to stop.")
         XCTAssertFalse(output.isReady)
         output.consume("ProxyBridge CLI 4.1.1")
-        output.consume("Profile \"ChatGPT Only\": 1 proxies, 1 rules applied")
-        XCTAssertFalse(output.isReady)
         output.consume("Profile \"ChatGPT Only\": 1 proxies, 2 rules applied")
+        XCTAssertFalse(output.isReady)
+        output.consume("Profile \"ChatGPT Only\": 1 proxies, 3 rules applied")
         XCTAssertFalse(output.isReady)
         output.consume("DNS proxy: off (host name rules and send hostname do not work)")
         XCTAssertTrue(output.isReady)
@@ -39,7 +39,7 @@ final class ProxyBridgeCLIOutputTests: XCTestCase {
     func testFailureToDisableVendorDNSWithdrawsReadiness() {
         var output = ProxyBridgeCLIOutput()
         for line in ["ProxyBridge CLI 4.1.1", "DNS proxy: off (host name rules and send hostname do not work)",
-                     "Profile \"ChatGPT Only\": 1 proxies, 2 rules applied", "Redirecting traffic. Press Ctrl+C to stop."] {
+                     "Profile \"ChatGPT Only\": 1 proxies, 3 rules applied", "Redirecting traffic. Press Ctrl+C to stop."] {
             output.consume(line)
         }
         XCTAssertTrue(output.isReady)
@@ -64,7 +64,7 @@ final class ProxyBridgeCLIControllerTests: XCTestCase {
         trap 'exit 0' TERM INT
         printf 'ProxyBridge CLI 4.1.1\\nProfile "ChatGPT Only": 1 proxies, '
         sleep 0.1
-        printf '2 rules applied\\nDNS proxy: off (host name rules and send hostname do not work)\\nRedirecting traffic. Press Ctrl+C to stop.\\n'
+        printf '3 rules applied\\nDNS proxy: off (host name rules and send hostname do not work)\\nRedirecting traffic. Press Ctrl+C to stop.\\n'
         while :; do sleep 0.1; done
         """)
         defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
@@ -91,7 +91,7 @@ final class ProxyBridgeCLIControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .stopped)
         XCTAssertNil(controller.processIdentifier)
 
-        let (exiting, profile) = try fixture("echo 'ProxyBridge CLI 4.1.1'; echo 'Profile \"ChatGPT Only\": 1 proxies, 2 rules applied'; echo 'DNS proxy: off (host name rules and send hostname do not work)'; echo 'Redirecting traffic. Press Ctrl+C to stop.'; sleep 0.2")
+        let (exiting, profile) = try fixture("echo 'ProxyBridge CLI 4.1.1'; echo 'Profile \"ChatGPT Only\": 1 proxies, 3 rules applied'; echo 'DNS proxy: off (host name rules and send hostname do not work)'; echo 'Redirecting traffic. Press Ctrl+C to stop.'; sleep 0.2")
         defer { try? FileManager.default.removeItem(at: exiting.deletingLastPathComponent()) }
         let short = ProxyBridgeCLIController(executableURL: exiting, timeout: 2, logURL: exiting.deletingLastPathComponent().appendingPathComponent("log"))
         try await short.ensureRunning(profileData: profile)

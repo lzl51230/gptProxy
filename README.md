@@ -8,7 +8,7 @@
 
 启动器要求使用支持 Codex 的新版 ChatGPT 桌面客户端；检测到旧版 `com.openai.chat` 客户端时，会提示更新。
 
-规则也会代理其他路径下的同名 Codex 程序，以及其他应用的 Sparkle 更新器。`localhost`、`127.0.0.1`、`::1` 和 `192.168.*.*` 的 TCP 连接保留直连；其余匹配的 TCP/UDP 连接通过代理。通用工具进程（如 curl、git、Python）不在匹配列表中。
+规则也会代理其他路径下的同名 Codex 程序，以及其他应用的 Sparkle 更新器。`localhost`、`127.0.0.1`、`::1` 和 `192.168.*.*` 的 TCP 连接保留直连；其他原生 IPv6 TCP 连接被阻断，其余匹配的 TCP/UDP 连接通过代理。通用工具进程（如 curl、git、Python）不在匹配列表中。
 
 “打开 .codex”按钮可打开当前用户的 Codex 配置目录；目录不存在时会自动创建。
 
@@ -20,7 +20,7 @@
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.0-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.1-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 
@@ -28,15 +28,21 @@ make verify
 
 ## 系统 DNS 保护
 
-点击“启动 ChatGPT”时先启用 DNS 保护，也可在主窗口单独启用。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。
+点击“启动 ChatGPT”时先启用 DNS / IPv4 保护，也可在主窗口单独启用。单独启用时自动重启已经打开的 GPT，使旧连接采用新策略；GPT 未运行时不额外启动。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。2.3.1 使用辅助服务协议 2，首次启用会先恢复旧事务再升级服务。
+
+如果 GPT 未在正常退出请求后 3 秒内结束，或重新打开失败，会恢复网络设置并显示错误，不强制终止 GPT。此时请手动退出 GPT 后重试。
 
 要求官方 ProxyBridge 4.1.1，内置配置关闭其 DNS 扩展，避免它接管并终止 TCP DNS 连接。TCP/UDP 流量规则保留；域名解析由本项目和 Clash 负责。4.1.0 用户需通过“修复”升级。
 
-仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。普通系统解析经 `127.0.0.1/::1:53` 转入 Clash 的 `127.0.0.1:17853`，再通过当前 `GLOBAL` 节点请求 Cloudflare 和 Google DoH。GPT 通过 SOCKS5 提交的域名也使用该配置。临时采用 `redir-host` 返回真实地址，不改订阅文件。节点自身的 `default-nameserver` 与 `proxy-server-nameserver` 必须使用独立加密解析；引导服务器必须是 IP 地址，避免解析依赖尚未建立的代理。
+仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。普通系统解析经 `127.0.0.1/::1:53` 转入 Clash 的 `127.0.0.1:17853`，再通过当前 `GLOBAL` 节点请求 Cloudflare 和 Google DoH。GPT 通过 SOCKS5 提交的域名也使用该配置。临时采用 `redir-host` 返回真实地址，不改订阅文件。节点自身的 `default-nameserver` 与 `proxy-server-nameserver` 必须使用独立加密解析；引导服务器必须是 IPv4 地址，不接受 IPv6 字面地址，避免解析依赖尚未建立的代理。
+
+保护期间，当前共用 Clash 实例的顶层 `ipv6` 和 `dns.ipv6` 均临时关闭，普通节点及 provider 覆盖使用 `ip-version: ipv4`。同时使用该实例的其他应用也受影响，启用时会断开现有 Clash 连接一次，让它们按新策略重建。IPv4 解析和 AAAA 空响应检查通过，并完成所需 GPT 重启后，窗口才显示保护成功。节点无可用 IPv4 或启用失败时恢复原设置，不回退 IPv6 或直连。
+
+此策略限制本机到节点的地址族，不控制远端节点到网站的地址族。GPT 原生 IPv6 TCP 被阻断；UDP 全部经代理，节点连接使用 IPv4。ProxyBridge 4.1.1 对 UDP 只按进程匹配，不能用 IPv6 `BOTH + BLOCK` 规则，否则会误封 IPv4 UDP 和语音流量。macOS 的 IPv6 及 `::1` 本地 DNS 服务保留。
 
 保护期间，所有已启用物理网络服务的 DNS 指向本地服务；PF 专用 anchor 阻断非环回接口上的 IPv4/IPv6 TCP/UDP 53，并精确清理既有 DNS 状态。其他 PF 规则、mDNS、其他端口保持原样。应用自带 DoH/DoT 不属于明文 53 阻断范围；检测到 VPN 或其他系统 DNS 覆盖时停止保护。
 
-辅助服务独立于窗口进程检查链路、网络服务和节点变化。连续两次 DNS 链路检查失败、Clash 配置重新加载、启动器失去响应或退出时，自动还原 DNS、Clash 配置和自身 PF 规则；恢复时保留用户随后手动修改的 DNS、节点和模式。主窗口显示“保护已关闭”，不自动重新开启。恢复后系统可以使用原 DNS，届时不保证 DNS 走代理。
+辅助服务独立于窗口进程检查链路、IPv4 策略、网络服务和节点变化。连续两次检查失败、Clash 配置重新加载、启动器失去响应或退出时，自动还原 DNS、Clash 配置和自身 PF 规则；恢复时保留用户随后手动修改的 DNS、节点和模式，并还原本次临时覆盖的 IPv6 开关。用户主动开启 IPv6 或加载新配置时保留其选择。主窗口显示“保护已关闭”，不自动重新开启。恢复后系统可以使用原 DNS 和 IPv6，届时不保证受保护。
 
 恢复记录位于 `/Library/Application Support/ChatGPT Proxy DNS/recovery.json`，仅 root 可读，可能包含原 Clash 配置。正常恢复成功后删除；崩溃或重启后优先恢复未完成的事务。辅助服务只接受安装用户或 root 的固定控制命令，不记录查询域名及订阅凭据。
 
@@ -54,7 +60,9 @@ sudo /Library/PrivilegedHelperTools/local.alex.chatgpt-proxy.dns --uninstall
 
 PF 状态清理目前限定已审核的 Darwin 23–25（macOS 14、15、26）ABI；遇到其他系统版本拒绝启用，避免误操作防火墙。
 
-2026-11-05 在 macOS 26.6、Clash v1.19.24 和 ProxyBridge 4.1.1 上完成本机联调：IPv4/IPv6 环回的 TCP/UDP DNS 均可用，外部 TCP/UDP 53 查询被阻断，Clash 连接链确认两家 DoH 均经当前 GLOBAL 节点。一键恢复及正常退出均还原全部网络服务 DNS；强制终止启动器后，独立服务约 4 秒内恢复。每次恢复后均核对系统解析器、各服务 DNS 与原始 Clash 文件，结果与修改前一致。自动化测试共 117 项通过，包含后台定时回调与恢复失败注入测试。其他系统版本仍需各自完成联调验收。
+2026-11-05 在 macOS 26.6、Clash v1.19.24 和 ProxyBridge 4.1.1 上完成 2.3.0 本机联调：IPv4/IPv6 环回的 TCP/UDP DNS 均可用，外部 TCP/UDP 53 查询被阻断，Clash 连接链确认两家 DoH 均经当前 GLOBAL 节点。一键恢复及正常退出均还原全部网络服务 DNS；强制终止启动器后，独立服务约 4 秒内恢复。每次恢复后均核对系统解析器、各服务 DNS 与原始 Clash 文件，结果与修改前一致。自动化测试共 117 项通过，包含后台定时回调与恢复失败注入测试。其他系统版本仍需各自完成联调验收。
+
+同日完成 2.3.1 联调：A 返回 IPv4，AAAA 返回空结果；可控 IPv6 端点允许普通进程访问，匹配 GPT 的测试进程被阻断；IPv4 UDP 经 GLOBAL 节点正常返回，节点的非环回连接均使用 IPv4。切换节点后约 6 秒内 DoH 跟随新节点。手动开启 Clash IPv6 后约 9 秒自动停止保护；强制终止启动器后约 4 秒恢复原 IPv6、DNS 及配置。正常退出及 GPT 拒绝退出后的回滚均验证通过；GPT 自动重启成功路径由单元测试覆盖，本机该次 GPT 拒绝正常退出，未验证成功重启。共 130 项测试及双架构、签名和 ZIP 检查通过，临时 IPv6 测试地址和抓包进程已清理。
 
 
 启动前检测通过配置的本地 SOCKS5 代理检查 UDP Associate，并向 https://chatgpt.com/backend-api/codex/models 发送一次无凭据请求；HTTP 401 表示接口可达且要求认证。不再查询出口地区或按 CN 地区拦截。检测仅验证网络可达及连接保持情况，不验证账号、额度或模型会话。

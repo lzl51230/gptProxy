@@ -63,6 +63,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var supportsUDP = false
     @Published private(set) var codexLatencyMilliseconds: Int?
     @Published private(set) var profileInstallRequiresManualFallback = false
+    @Published private(set) var applyingProtection = false
     @Published var showingSetup = false
 
     private let defaults = UserDefaults.standard
@@ -114,6 +115,11 @@ final class AppModel: ObservableObject {
 
     var isBusy: Bool {
         activeOperation != nil
+    }
+
+    var protectionReady: Bool { dns.status.isEnabled && !applyingProtection }
+    var protectionDetail: String {
+        applyingProtection ? "正在应用 DNS 与 IPv4 策略，等待 GPT 连接重建" : dns.status.detail
     }
 
     var chatGPTInstalled: Bool {
@@ -223,11 +229,7 @@ final class AppModel: ObservableObject {
         do {
             try await configureBundledProxyBridgeProfile()
             try checkOperationCancellation()
-            await monitor.stopAndWait()
-            let port = try validatedPort()
-            defer { monitor.start(port: port) }
-            try await dns.enable(port: port, beforeActivation: { try self.checkOperationCancellation() })
-            if operationCancelled { try await dns.restore(); throw CancellationError() }
+            try await activateProtection(launchGPT: false)
             phase = .ready
         } catch { phase = .failed(error.localizedDescription) }
     }
@@ -396,13 +398,19 @@ final class AppModel: ObservableObject {
         try await configureBundledProxyBridgeProfile()
         try checkOperationCancellation()
 
-        await monitor.stopAndWait()
-        do { try await dns.enable(port: port, beforeActivation: { try self.checkOperationCancellation() }) }
-        catch { monitor.start(port: port); throw error }
-        monitor.start(port: port)
-        if operationCancelled { try await dns.restore(); throw CancellationError() }
+        try await activateProtection(launchGPT: true)
+    }
 
-        try await restartChatGPT()
+    private func activateProtection(launchGPT: Bool) async throws {
+        let port = try validatedPort()
+        applyingProtection = true
+        await monitor.stopAndWait()
+        defer { applyingProtection = false; monitor.start(port: port) }
+        try await ProtectionActivation.run(launchGPT: launchGPT,
+            isGPTRunning: { !self.runningChatGPTApplications().isEmpty },
+            enable: { try await self.dns.enable(port: port, beforeActivation: { try self.checkOperationCancellation() }) },
+            restartGPT: { try await self.restartChatGPT() }, restore: { try await self.dns.restore() },
+            checkCancellation: { try self.checkOperationCancellation() })
     }
 
     private func beginOperation(phase newPhase: Phase) -> UUID? {
@@ -447,6 +455,7 @@ final class AppModel: ObservableObject {
         guard runningChatGPTApplications().isEmpty else {
             throw AppError.chatGPTDidNotTerminate
         }
+        try checkOperationCancellation()
         try await openApplication(at: Self.chatGPTURL, activates: true)
     }
 

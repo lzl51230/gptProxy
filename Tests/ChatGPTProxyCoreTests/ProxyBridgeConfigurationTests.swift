@@ -97,6 +97,19 @@ final class ProxyBridgeConfigurationTests: XCTestCase {
         XCTAssertFalse(ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: data))
     }
 
+    func testIPv6BlockMustBeTCPOnlyAndFollowLocalExceptions() throws {
+        for proto in ["BOTH", "UDP"] {
+            var rules = expectedRules
+            rules[1]["protocol"] = proto
+            XCTAssertFalse(ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: try makePreferences(rules: rules)))
+        }
+        var reversed = expectedRules
+        reversed.swapAt(0, 1)
+        XCTAssertFalse(ProxyBridgeConfigurationParser.isChatGPTOnlyProfileActive(in: try makePreferences(rules: reversed)))
+        XCTAssertEqual(expectedRules[2]["protocol"] as? String, "BOTH")
+        XCTAssertEqual(expectedRules[2]["action"] as? String, "chatgpt-proxy-relay")
+    }
+
     func testCollisionSafeDestinationPreservesExistingFiles() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -154,6 +167,16 @@ final class ProxyBridgeConfigurationTests: XCTestCase {
                 "targetPorts": "*",
                 "protocol": "TCP",
                 "action": "DIRECT",
+                "enabled": true,
+            ],
+            [
+                "localId": "chatgpt-ipv6-block",
+                "name": "ChatGPT IPv6 TCP Block",
+                "processNames": ChatGPTApplicationCompatibility.proxyBridgeProcessNames,
+                "targetHosts": "::/0",
+                "targetPorts": "*",
+                "protocol": "TCP",
+                "action": "BLOCK",
                 "enabled": true,
             ],
             [

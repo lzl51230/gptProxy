@@ -19,7 +19,7 @@ swift test
 ARCHITECTURES=$(/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/ChatGPTProxyLauncher")
 [[ "$ARCHITECTURES" == *arm64* && "$ARCHITECTURES" == *x86_64* ]]
 HELPER="$APP_DIR/Contents/Resources/DNSProtectionHelper"
-[[ -x "$HELPER" && "$("$HELPER" --version)" == 1 ]]
+[[ -x "$HELPER" && "$("$HELPER" --version)" == 2 ]]
 /usr/bin/codesign --verify --strict "$HELPER"
 HELPER_ARCHITECTURES=$(/usr/bin/lipo -archs "$HELPER")
 [[ "$HELPER_ARCHITECTURES" == *arm64* && "$HELPER_ARCHITECTURES" == *x86_64* ]]
@@ -31,7 +31,10 @@ HELPER_ARCHITECTURES=$(/usr/bin/lipo -archs "$HELPER")
     .proxyConfigs[0].host == "127.0.0.1" and
     .proxyConfigs[0].port == 17890 and
     .proxyConfigs[0].type == "socks5" and
-    (.proxyRules | length) == 2 and
+    (.proxyRules | length) == 3 and
+    .proxyRules[0].localId == "chatgpt-local-direct" and
+    .proxyRules[1].localId == "chatgpt-ipv6-block" and
+    .proxyRules[2].localId == "chatgpt-only-proxy" and
     all(.proxyRules[]; .processNames == "com.openai.*;com.openai.chat;ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*") and
     ([.proxyRules[] | select(.localId == "chatgpt-local-direct")] | length) == 1 and
     (.proxyRules[] | select(.localId == "chatgpt-local-direct") |
@@ -40,6 +43,7 @@ HELPER_ARCHITECTURES=$(/usr/bin/lipo -archs "$HELPER")
         .protocol == "TCP" and
         .targetHosts == "localhost;127.0.0.1;::1;192.168.*.*;192.168.100.81" and
         .targetPorts == "*") and
+    (.proxyRules[1] | .enabled == true and .action == "BLOCK" and .protocol == "TCP" and .targetHosts == "::/0" and .targetPorts == "*") and
     ([.proxyRules[] | select(.localId == "chatgpt-only-proxy")] | length) == 1 and
     (.proxyRules[] | select(.localId == "chatgpt-only-proxy") |
         .enabled == true and

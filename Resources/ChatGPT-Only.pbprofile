@@ -23,6 +23,16 @@
       "targetPorts" : "*"
     },
     {
+      "action" : "BLOCK",
+      "enabled" : true,
+      "localId" : "chatgpt-ipv6-block",
+      "name" : "ChatGPT IPv6 TCP Block",
+      "processNames" : "com.openai.*;com.openai.chat;ChatGPT;codex;codex-code-mode-host;codex_chronicle*;org.sparkle-project.*",
+      "protocol" : "TCP",
+      "targetHosts" : "::/0",
+      "targetPorts" : "*"
+    },
+    {
       "action" : "chatgpt-proxy-relay",
       "enabled" : true,
       "localId" : "chatgpt-only-proxy",

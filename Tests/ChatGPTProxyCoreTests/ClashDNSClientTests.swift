@@ -13,12 +13,14 @@ final class ClashDNSClientTests: XCTestCase, @unchecked Sendable {
         try await client.reload(socket: fixture.socket, yaml: yaml)
         try await client.restoreSelection(socket: fixture.socket, selection: selection)
         try await client.flushDNS(socket: fixture.socket)
+        try await client.closeAllConnections(socket: fixture.socket)
         let log = try String(contentsOf: fixture.log, encoding: .utf8).split(separator: "\n")
         let rows = try log.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
         XCTAssertEqual(rows[0]["path"] as? String, "/configs?force=false")
         XCTAssertEqual((rows[0]["body"] as? [String: String])?["payload"], yaml)
         XCTAssertEqual(rows[1]["path"] as? String, "/proxies/GLOBAL")
         XCTAssertEqual(rows[2]["path"] as? String, "/cache/dns/flush")
+        XCTAssertEqual(rows[3]["path"] as? String, "/connections")
     }
 
     func testRejectedConfigurationDoesNotPassTheActivationGate() async throws {
@@ -28,6 +30,16 @@ final class ClashDNSClientTests: XCTestCase, @unchecked Sendable {
             try await ClashControllerClient().reload(socket: fixture.socket, yaml: "reject")
             XCTFail("Rejected DNS configuration must fail activation")
         } catch { XCTAssertTrue(error.localizedDescription.contains("控制接口")) }
+    }
+
+    func testDNSConnectionsAreClosedWithLiteralUUIDsAfterNodeChanges() async throws {
+        let fixture = try ControllerFixture()
+        defer { fixture.stop() }
+        try await ClashControllerClient().closeDNSConnections(socket: fixture.socket)
+        let rows = try String(contentsOf: fixture.log, encoding: .utf8).split(separator: "\n")
+            .map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0]["path"] as? String, "/connections/fbe648de-7980-46be-92c5-b1af6dbc9e4a")
     }
 }
 
@@ -54,6 +66,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
   payload={'proxies':{'GLOBAL':{'name':'GLOBAL','type':'Selector','now':'auto','all':['auto']},'auto':{'name':'auto','type':'URLTest','now':'node','all':['node']},'node':{'name':'node','type':'VLESS'}}}
+  if self.path=='/connections': payload={'connections':[{'id':'fbe648de-7980-46be-92c5-b1af6dbc9e4a','chains':['node','GLOBAL'],'metadata':{'destinationIP':'1.1.1.1','destinationPort':'443'}},{'id':'keep','chains':['GLOBAL'],'metadata':{'destinationIP':'9.9.9.9','destinationPort':'443'}}]}
   b=json.dumps(payload).encode(); self.send_response(200); self.send_header('Content-Length',str(len(b))); self.end_headers(); self.wfile.write(b)
  def change(self):
   n=int(self.headers.get('Content-Length',0)); body=json.loads(self.rfile.read(n)) if n else {}
@@ -61,6 +74,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   self.send_response(400 if body.get('payload')=='reject' else 204); self.send_header('Content-Length','0'); self.end_headers()
  do_PUT=change
  do_POST=change
+ do_DELETE=change
 server=socketserver.UnixStreamServer(sys.argv[1],Handler)
 print('R',flush=True)
 server.serve_forever()

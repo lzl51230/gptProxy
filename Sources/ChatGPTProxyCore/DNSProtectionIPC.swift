@@ -91,6 +91,28 @@ public enum DNSPacket {
 
     public static func probe(port: UInt16, timeout: Int = 5, tcp: Bool = false, host: String = "127.0.0.1") throws {
         let query = query(name: "gptproxy-\(UUID().uuidString.lowercased()).example.com")
+        _ = try exchange(query, port: port, timeout: timeout, tcp: tcp, host: host)
+    }
+
+    public static func assertIPv4Responses(a: Data, aQuery: Data, aaaa: Data, aaaaQuery: Data) throws {
+        guard isValidResponse(a, to: aQuery), a[3] & 0x0f == 0,
+              Int(a[6]) << 8 | Int(a[7]) > 0 else {
+            throw MonitorError.message("代理内 IPv4 DNS 解析不可用")
+        }
+        guard isValidResponse(aaaa, to: aaaaQuery), aaaa[3] & 0x0f == 0,
+              aaaa[6] == 0, aaaa[7] == 0 else {
+            throw MonitorError.message("DNS 仍返回 AAAA 或查询失败，IPv4 保护未生效")
+        }
+    }
+
+    public static func probeIPv4Only(port: UInt16) throws {
+        let a = query(name: "one.one.one.one"), aaaa = query(name: "one.one.one.one", type: 28)
+        try assertIPv4Responses(a: exchange(a, port: port), aQuery: a,
+                                aaaa: exchange(aaaa, port: port), aaaaQuery: aaaa)
+    }
+
+    private static func exchange(_ query: Data, port: UInt16, timeout: Int = 5,
+                                 tcp: Bool = false, host: String = "127.0.0.1") throws -> Data {
         let ipv6 = host.contains(":")
         let fd = socket(ipv6 ? AF_INET6 : AF_INET, tcp ? SOCK_STREAM : SOCK_DGRAM, 0)
         guard fd >= 0 else { throw MonitorError.message("无法创建 DNS 检测连接") }
@@ -142,5 +164,6 @@ public enum DNSPacket {
             response = Data(buffer.prefix(count))
         }
         guard isValidResponse(response, to: query) else { throw MonitorError.message("代理内 DNS 返回无效响应") }
+        return response
     }
 }

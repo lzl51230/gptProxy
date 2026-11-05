@@ -17,7 +17,7 @@ public struct ProxyBridgeCLIOutput: Sendable {
     public init() {}
     public mutating func consume(_ line: String) {
         if line == "ProxyBridge CLI \(ProxyBridgeRelease.version)" { versionMatches = true }
-        if line == "Profile \"ChatGPT Only\": 1 proxies, 2 rules applied" { profileApplied = true }
+        if line == "Profile \"ChatGPT Only\": 1 proxies, 3 rules applied" { profileApplied = true }
         if line == "Redirecting traffic. Press Ctrl+C to stop." { redirecting = true }
         if line == "DNS proxy: off (host name rules and send hostname do not work)" { dnsDisabled = true }
         if line.contains("waiting for your approval") { waitingForApproval = true }

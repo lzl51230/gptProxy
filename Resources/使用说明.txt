@@ -13,7 +13,9 @@ ChatGPT Proxy 2.2.3
 更新启动器后，请通过它重新启动 ChatGPT，以应用原生代理设置并解决 workspace routing discovery timed out。
 关闭窗口继续驻留；正常退出先停止 CLI 再停止本地中继。查看代理日志可定位启动错误。
 
-该工具不修改 macOS 系统代理。ProxyBridge 配置匹配 OpenAI 桌面相关 bundle、内置 Codex 后台程序及 Sparkle 更新器。其他路径下的同名 Codex 程序和其他应用的 Sparkle 更新器也会走代理；通用工具进程（curl、git、Python 等）不在匹配列表中。本机及 192.168.*.* 的 TCP 连接保留直连，其余匹配的 TCP/UDP 连接通过代理。
+该工具不修改 macOS 系统代理。ProxyBridge 配置匹配 OpenAI 桌面相关 bundle、内置 Codex 后台程序及 Sparkle 更新器。其他路径下的同名 Codex 程序和其他应用的 Sparkle 更新器也会走代理；通用工具进程（curl、git、Python 等）不在匹配列表中。本机及 192.168.*.* 的 TCP 连接保留直连，其他原生 IPv6 TCP 阻断，其余匹配的 TCP/UDP 连接通过代理。
+
+“启用 DNS / IPv4 保护”会临时关闭共用 Clash 的 IPv6 和 AAAA 解析，节点及订阅覆盖强制使用 IPv4；其他使用该 Clash 实例的应用也受影响。启用时现有 Clash 连接会重建，已经打开的 GPT 会自动重启。UDP 经 IPv4 代理隧道保留语音功能；远端节点访问网站的地址族保持原样。macOS IPv6 和 ::1 本地 DNS 保留。恢复、退出或故障后还原原配置；恢复后保护关闭。
 
 主窗口中的“打开 .codex”可打开当前用户的 Codex 配置目录；目录不存在时会自动创建。
 

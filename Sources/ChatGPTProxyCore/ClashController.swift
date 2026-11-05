@@ -146,7 +146,9 @@ public struct ClashControllerClient: Sendable {
     }
 
     private func encoded(_ name: String) -> String {
-        name.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        // Mihomo compares connection route parameters to literal UUIDs. Escaping
+        // their hyphens returns 204 without finding or closing the connection.
+        name.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-")))!
     }
 
     public func delay(socket: String, name: String) async throws -> Int {
@@ -195,6 +197,10 @@ public struct ClashControllerClient: Sendable {
 
     public func flushDNS(socket: String) async throws {
         _ = try await request(socket: socket, path: "/cache/dns/flush", method: "POST")
+    }
+
+    public func closeAllConnections(socket: String) async throws {
+        _ = try await request(socket: socket, path: "/connections", method: "DELETE")
     }
 
     public func closeDNSConnections(socket: String) async throws {

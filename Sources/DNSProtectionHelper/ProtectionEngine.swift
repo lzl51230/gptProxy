@@ -16,6 +16,8 @@ struct RecoveryJournal: Codable, Sendable {
     var firewallToken: String?
     var clashChanged: Bool? = false
     var pfWasEnabled: Bool?
+    var originalIPv6: Bool?
+    var ipv4PolicyApplied: Bool?
 }
 
 actor ProtectionEngine {
@@ -143,6 +145,7 @@ actor ProtectionEngine {
                     try await assertSystemResolvers()
                     try await assertFirewall()
                     try await probe(port: 53)
+                    try await assertIPv4Policy(socket: socket)
                     return status
                 }
                 if journal != nil { try await restore(reason: "已恢复原配置") }
@@ -176,6 +179,7 @@ actor ProtectionEngine {
             throw MonitorError.message("DNS 保护要求 Clash Party 全局模式并选择代理节点")
         }
         let general = try await client.request(socket: socket, path: "/configs")
+        let originalIPv6 = try DNSProtectionConfiguration.runtimeIPv6(general)
         let original = try DNSProtectionConfiguration.runtimeYAML(yaml, general: general)
         let protected = try DNSProtectionConfiguration.protectedYAML(original)
         try DNSProtectionConfiguration.assertDNSPortAvailable()
@@ -188,7 +192,8 @@ actor ProtectionEngine {
         let pfWasEnabled = DNSFirewallState.isEnabled(try await DNSSystemCommand.run("/sbin/pfctl", ["-s", "info"]))
         status = .init(phase: .enabling, detail: "正在启用系统 DNS 保护")
         journal = .init(ownerUID: ownerUID, ownerPID: ownerPID, corePID: try corePID(socket: socket), socket: socket, proxyPort: port, originalYAML: original,
-                        sourceGeneration: try generation(), bootSession: try DNSProtectionConfiguration.bootSession(), services: services, pfWasEnabled: pfWasEnabled)
+                        sourceGeneration: try generation(), bootSession: try DNSProtectionConfiguration.bootSession(), services: services,
+                        pfWasEnabled: pfWasEnabled, originalIPv6: originalIPv6, ipv4PolicyApplied: false)
         try persist()
         let frontend = DNSFrontend()
         self.frontend = frontend
@@ -196,9 +201,12 @@ actor ProtectionEngine {
         selection = try await client.selection(socket: socket)
         selectionSignature = initial.selectionSignature
         journal?.clashChanged = true
+        journal?.ipv4PolicyApplied = true
         try persist()
         try await client.reload(socket: socket, yaml: protected)
         try await client.restoreSelection(socket: socket, selection: selection)
+        // Reloading a policy does not close existing IPv6 transports or UDP associations.
+        try await client.closeAllConnections(socket: socket)
         try await client.flushDNS(socket: socket)
         try await waitForDNS(port: DNSProtectionConfiguration.clashDNSPort)
         try await waitForDNS(port: 53, tcp: true)
@@ -216,10 +224,18 @@ actor ProtectionEngine {
         try await assertSystemResolvers()
         try await assertFirewall()
         try await probe(port: 53)
+        try await assertIPv4Policy(socket: socket)
         guard try generation() == journal?.sourceGeneration else { throw MonitorError.message("Clash 配置在启用期间发生变化") }
         lastHeartbeat = ProcessInfo.processInfo.systemUptime
         failures = 0
-        status = .init(phase: .enabled, detail: "系统 DNS 经 GLOBAL 节点使用加密 DoH；明文直连已阻断")
+        status = .init(phase: .enabled, detail: "DNS 已保护 · 本机代理使用 IPv4；明文 DNS 已阻断")
+    }
+
+    private func assertIPv4Policy(socket: String) async throws {
+        guard try !DNSProtectionConfiguration.runtimeIPv6(await client.request(socket: socket, path: "/configs")) else {
+            throw MonitorError.message("Clash 的 IPv6 设置被覆盖，IPv4 保护已停止")
+        }
+        try await Task.detached { try DNSPacket.probeIPv4Only(port: 53) }.value
     }
 
     private func probe(port: UInt16, tcp: Bool = false) async throws {
@@ -328,13 +344,15 @@ actor ProtectionEngine {
         guard try corePID(socket: saved.socket) == saved.corePID else { return }
         let general = try await client.request(socket: saved.socket, path: "/configs")
         let currentSelection = try await client.selection(socket: saved.socket)
-        let base = try generation(uid: saved.ownerUID) == saved.sourceGeneration
-            ? saved.originalYAML : latestSource(uid: saved.ownerUID)
-        let original = try DNSProtectionConfiguration.runtimeYAML(base, general: general)
+        let sourceChanged = try generation(uid: saved.ownerUID) != saved.sourceGeneration
+        let base = try sourceChanged ? latestSource(uid: saved.ownerUID) : saved.originalYAML
+        let original = try DNSProtectionConfiguration.restoredYAML(base, general: general,
+            originalIPv6: saved.originalIPv6, ipv4PolicyApplied: saved.ipv4PolicyApplied == true, sourceChanged: sourceChanged)
         try await client.reload(socket: saved.socket, yaml: original)
         try await client.restoreSelection(socket: saved.socket, selection: currentSelection)
         try await client.flushDNS(socket: saved.socket)
         journal?.clashChanged = false
+        journal?.ipv4PolicyApplied = false
         try persist()
     }
 
@@ -373,6 +391,7 @@ actor ProtectionEngine {
             try await assertSystemResolvers()
             try await assertFirewall()
             try await probe(port: 53)
+            try await assertIPv4Policy(socket: saved.socket)
             failures = 0
         } catch {
             let immediate = kill(saved.ownerPID, 0) != 0 || ProcessInfo.processInfo.systemUptime - lastHeartbeat >= 15

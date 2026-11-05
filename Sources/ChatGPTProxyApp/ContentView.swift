@@ -96,11 +96,11 @@ struct ContentView: View {
                 issue: .localProxy(port: model.proxyPort)
             )
             GridRow {
-                Image(systemName: model.dns.status.isEnabled ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                    .foregroundStyle(model.dns.status.isEnabled ? .green : .orange)
+                Image(systemName: model.protectionReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                    .foregroundStyle(model.protectionReady ? .green : .orange)
                 Text("系统 DNS").fontWeight(.medium)
-                Text(model.dns.status.detail).foregroundStyle(theme.secondary).lineLimit(2)
-                    .help(model.dns.status.detail)
+                Text(model.protectionDetail).foregroundStyle(theme.secondary).lineLimit(2)
+                    .help(model.protectionDetail)
             }
         }
     }
@@ -128,7 +128,7 @@ struct ContentView: View {
 
             HStack {
                 if !model.dns.status.isEnabled {
-                    Button("启用 DNS 保护") {
+                    Button("启用 DNS / IPv4 保护") {
                         Task { await model.enableDNSProtection() }
                     }
                     .disabled(model.isBusy)
