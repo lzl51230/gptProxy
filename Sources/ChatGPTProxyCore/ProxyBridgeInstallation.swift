@@ -3,10 +3,11 @@ import CryptoKit
 import Combine
 
 public enum ProxyBridgeRelease {
-    public static let version = "4.1.1"
-    public static let downloadURL = URL(string: "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.1.1_MacOS/ProxyBridge-v4.1.1-Universal-Installer.pkg")!
-    public static let sha256 = "7ffebe7ada4226567dcd4f7c8e7009d2ad0ef2afa4bc7a8525e2a9ddc0dd8c68"
-    public static let teamIdentifier = "L4HJT32Z59"
+    private static let specification: [String:String] = try! RustCore().call(["op":"installationSpec", "platform":"macos"])
+    public static let version = specification["version"]!
+    public static let downloadURL = URL(string: specification["url"]!)!
+    public static let sha256 = specification["sha256"]!
+    public static let teamIdentifier = specification["teamIdentifier"]!
     public static let applicationURL = URL(fileURLWithPath: "/Applications/ProxyBridge.app")
 }
 

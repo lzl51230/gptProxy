@@ -6,25 +6,23 @@ public enum ProxyBridgeCLIState: Equatable, Sendable {
     case stopped, starting, waitingForApproval, running, failed(String)
 }
 
-public struct ProxyBridgeCLIOutput: Sendable, Equatable {
+public struct ProxyBridgeCLIOutput: Codable, Sendable, Equatable {
     public private(set) var versionMatches = false
     public private(set) var profileApplied = false
     public private(set) var redirecting = false
     public private(set) var dnsDisabled = false
     public private(set) var waitingForApproval = false
     public private(set) var failure: String?
-    public var isReady: Bool { versionMatches && profileApplied && redirecting && dnsDisabled && failure == nil }
+    public var isReady: Bool { (try? lifecycle(alive:true,elapsed:0,timeout:330).ready) ?? false }
+    struct Lifecycle: Decodable { let phase: String; let ready: Bool; let failure: String? }
+    func lifecycle(alive: Bool, elapsed: Double, timeout: Double, exitCode: Int32 = -1) throws -> Lifecycle {
+        let value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(self))
+        return try RustCore().call(["op":"cliStatus", "platform":"macos", "state":value, "alive":alive, "elapsed":elapsed, "timeout":timeout, "exitCode":exitCode])
+    }
     public init() {}
     public mutating func consume(_ line: String) {
-        if line == "ProxyBridge CLI \(ProxyBridgeRelease.version)" { versionMatches = true }
-        if line == "Profile \"ChatGPT Only\": 1 proxies, 3 rules applied" { profileApplied = true }
-        if line == "Redirecting traffic. Press Ctrl+C to stop." { redirecting = true }
-        if line == "DNS proxy: off (host name rules and send hostname do not work)" { dnsDisabled = true }
-        if line.contains("waiting for your approval") { waitingForApproval = true }
-        if line.hasPrefix("ERROR:") || line.contains("rule(s) were rejected") || line.contains("will go direct")
-            || line.contains("Could not switch the DNS proxy off") {
-            failure = line
-        }
+        let state = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(self))
+        self = try! RustCore().call(["op":"cliConsume", "state":state, "line":line, "platform":"macos"])
     }
 }
 
@@ -98,20 +96,17 @@ public final class ProxyBridgeCLIController: ObservableObject {
         try child.run()
         try input.fileHandleForWriting.write(contentsOf: data)
         try input.fileHandleForWriting.close()
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        let began = ContinuousClock.now
+        while true {
             try Task.checkCancellation()
-            if let failure = output.failure { throw CLIError.message(failure) }
-            if !child.isRunning { throw CLIError.message("ProxyBridge CLI 启动失败（\(child.terminationStatus)）。请查看代理日志。") }
-            if output.isReady {
-                loadedProfile = data
-                state = .running
-                return
-            }
-            if output.waitingForApproval { state = .waitingForApproval }
+            let alive = child.isRunning
+            let lifecycle = try output.lifecycle(alive:alive, elapsed:(ContinuousClock.now - began).seconds,
+                                                 timeout:timeout, exitCode:alive ? -1 : child.terminationStatus)
+            if let failure = lifecycle.failure { throw CLIError.message(failure) }
+            if lifecycle.ready { loadedProfile = data; state = .running; return }
+            if lifecycle.phase == "waitingForApproval" { state = .waitingForApproval }
             try await Task.sleep(for: .milliseconds(50))
         }
-        throw CLIError.message("ProxyBridge CLI 启动超时，请检查网络扩展授权。")
     }
 
     public func stopAndWait() async {

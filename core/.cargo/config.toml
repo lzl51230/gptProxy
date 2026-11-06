@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# The installed service must run on a clean Windows system without MSVC tools.
+# Rust allocates and frees every ABI buffer, so no CRT allocation crosses hosts.
+rustflags = ["-C", "target-feature=+crt-static"]

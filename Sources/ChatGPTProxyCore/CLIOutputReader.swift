@@ -85,9 +85,9 @@ final class CLIOutputReader: @unchecked Sendable {
         mailbox.invalidate()
         sources.forEach { $0.cancel() }
         await withCheckedContinuation { continuation in
-            cancelled.notify(queue: queue) {
-                self.lines.removeAll()
-                self.log.close()
+            cancelled.notify(queue: queue) { [weak self] in
+                self?.lines.removeAll()
+                self?.log.close()
                 continuation.resume()
             }
         }
@@ -98,39 +98,21 @@ final class CLIOutputReader: @unchecked Sendable {
 /// including its suffix, so a truncated diagnostic cannot become a ready marker.
 struct CLIOutputLines {
     static let maximumBytes = 65_536
-    private var bytes = Data()
-    private var discarding = false
-    var bufferedByteCount: Int { bytes.count }
-
+    private let core = RustCore()
+    private(set) var bufferedByteCount = 0
+    private struct Decoded: Decodable { let lines: [String]; let bufferedBytes: Int }
     mutating func consume(_ data: Data, emit: (String) -> Void) {
-        var start = data.startIndex
-        while start < data.endIndex {
-            let newline = data[start...].firstIndex(of: 10)
-            let end = newline ?? data.endIndex
-            if !discarding {
-                if end - start > Self.maximumBytes - bytes.count {
-                    bytes = Data()
-                    discarding = true
-                    emit("ERROR: CLI 输出行过长。")
-                } else { bytes.append(contentsOf: data[start..<end]) }
-            }
-            if let newline {
-                if !discarding { emitLine(emit) }
-                discarding = false
-                start = newline + 1
-            } else { break }
+        for offset in stride(from: 0, to: data.count, by: Self.maximumBytes) {
+            decode(Array(data.dropFirst(offset).prefix(Self.maximumBytes)), finish: false, emit: emit)
         }
     }
-
-    mutating func finish(emit: (String) -> Void) {
-        if !discarding, !bytes.isEmpty { emitLine(emit) }
-        bytes = Data()
-        discarding = false
-    }
-
-    private mutating func emitLine(_ emit: (String) -> Void) {
-        emit(String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
-        bytes.removeAll(keepingCapacity: true)
+    mutating func finish(emit: (String) -> Void) { decode([], finish: true, emit: emit) }
+    private mutating func decode(_ bytes: [UInt8], finish: Bool, emit: (String) -> Void) {
+        do {
+            let result: Decoded = try core.call(["op":"lineChunk", "bytes":bytes, "finish":finish])
+            bufferedByteCount = result.bufferedBytes
+            result.lines.forEach(emit)
+        } catch { emit("ERROR: CLI 输出读取失败。") }
     }
 }
 

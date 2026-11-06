@@ -5,10 +5,8 @@ public enum ProxyConfiguration {
     public static let relayPort: UInt16 = 17890
 
     public static func validatedPort(_ value: String) throws -> UInt16 {
-        guard let port = UInt16(value), port > 0, ![relayPort, DNSProtectionConfiguration.clashDNSPort, 53].contains(port) else {
-            throw ProxyConfigurationError.invalidPort
-        }
-        return port
+        do { return try RustCore().call(["op": "validatePort", "value": value]) }
+        catch { throw ProxyConfigurationError.invalidPort }
     }
 }
 
@@ -48,17 +46,8 @@ public enum ChatGPTApplicationCompatibility {
     ]
 
     public static func proxyLaunchEnvironment(inheriting environment: [String: String]) -> [String: String] {
-        var environment = environment
-        // Chromium's proxy arguments do not configure the native Codex backend.
-        // socks5h also keeps its destination DNS resolution at the proxy.
-        let proxy = "socks5h://127.0.0.1:\(ProxyConfiguration.relayPort)"
-        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
-            environment[key] = proxy
-        }
-        for key in ["NO_PROXY", "no_proxy"] {
-            environment[key] = "localhost,127.0.0.1,::1,192.168.0.0/16"
-        }
-        return environment
+        // A core/bridge failure is a programming or packaging error; never inherit an unsafe proxy fallback.
+        try! RustCore().call(["op": "launchEnvironment", "environment": environment])
     }
 
     public static func classify(

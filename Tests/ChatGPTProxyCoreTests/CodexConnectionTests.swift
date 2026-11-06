@@ -140,6 +140,7 @@ private final class CodexProbeFixture: @unchecked Sendable {
         subjectAltName=DNS:probe.invalid
         basicConstraints=critical,CA:TRUE
         keyUsage=critical,digitalSignature,keyCertSign,keyEncipherment
+        extendedKeyUsage=serverAuth
         """.write(to: config, atomically: true, encoding: .utf8)
         let openssl = Process(); openssl.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
         openssl.arguments = ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-config", config.path,

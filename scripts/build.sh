@@ -13,8 +13,11 @@ export DEVELOPER_DIR
 rm -rf "$BUILD_DIR/arm64" "$BUILD_DIR/x86_64" "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-swift build -c release --arch arm64 --scratch-path "$BUILD_DIR/arm64"
-swift build -c release --arch x86_64 --scratch-path "$BUILD_DIR/x86_64"
+"$PROJECT_DIR/scripts/build-core.sh" aarch64-apple-darwin
+"$PROJECT_DIR/scripts/build-core.sh" x86_64-apple-darwin
+
+GPTPROXY_RUST_TARGET=aarch64-apple-darwin swift build -c release --arch arm64 --scratch-path "$BUILD_DIR/arm64"
+GPTPROXY_RUST_TARGET=x86_64-apple-darwin swift build -c release --arch x86_64 --scratch-path "$BUILD_DIR/x86_64"
 
 ARM_BINARY=$(find "$BUILD_DIR/arm64" -type f -path '*/release/ChatGPTProxyApp' -perm +111 -print -quit)
 INTEL_BINARY=$(find "$BUILD_DIR/x86_64" -type f -path '*/release/ChatGPTProxyApp' -perm +111 -print -quit)
@@ -35,6 +38,8 @@ INTEL_HELPER=$(find "$BUILD_DIR/x86_64" -type f -path '*/release/DNSProtectionHe
 /bin/cp "$PROJECT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 /bin/cp "$PROJECT_DIR/Resources/ChatGPT-Only.pbprofile" "$RESOURCES_DIR/ChatGPT-Only.pbprofile"
 /bin/cp "$PROJECT_DIR/Resources/THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
+RUST_SYSROOT=$(cd "$PROJECT_DIR" && "$HOME/.cargo/bin/rustc" --print sysroot)
+/bin/cp "$RUST_SYSROOT/share/doc/rust/COPYRIGHT-library.html" "$RESOURCES_DIR/Rust-Std-Notices.html"
 /usr/bin/codesign --force --deep --sign - "$APP_DIR"
 
 print "$APP_DIR"

@@ -1,6 +1,6 @@
 # ChatGPT Proxy
 
-适用于 macOS 14 及以上版本的启动器，可将 OpenAI 桌面应用的流量转发到用户指定的本地 SOCKS5 代理。默认上游代理端口为 `7890`。
+适用于 macOS 14 及以上版本和 Windows 11 x64 的启动器，可将 OpenAI 桌面应用的流量转发到用户指定的本地 SOCKS5 代理。默认上游代理端口为 `7890`。
 
 启动器不会修改 macOS 系统代理设置，而是在 `127.0.0.1:17890` 运行本地 TCP 中继。内置的 ProxyBridge 配置会匹配 `com.openai.*`、旧版 `com.openai.chat`、`ChatGPT`、`codex`、`codex-code-mode-host`、`codex_chronicle*` 和 `org.sparkle-project.*`，并将匹配的流量转发到中继。启动器托管 ProxyBridge 4.1.1 CLI，通过标准输入加载内置规则，确认规则完整生效后才允许启动 GPT。无需打开 ProxyBridge 窗口或修改其偏好文件。启动 GPT 时同时将其 Electron HTTP(S)/WebSocket 代理指向内部 SOCKS5 中继，让域名在代理端解析，避免本地 DNS 无回包导致界面离线；本机和 192.168.*.* 仍绕过该代理。首次运行需在 macOS 批准网络扩展；其他 CLI 实例须先自行停止。关闭窗口后继续驻留，正常退出时先停止 CLI 再关闭中继。
 
@@ -11,6 +11,16 @@
 规则也会代理其他路径下的同名 Codex 程序，以及其他应用的 Sparkle 更新器。`localhost`、`127.0.0.1`、`::1` 和 `192.168.*.*` 的 TCP 连接保留直连；其他原生 IPv6 TCP 连接被阻断，其余匹配的 TCP/UDP 连接通过代理。通用工具进程（如 curl、git、Python）不在匹配列表中。
 
 “打开 .codex”按钮可打开当前用户的 Codex 配置目录；目录不存在时会自动创建。
+
+## 跨平台核心
+
+共用逻辑位于 `core/`，使用 Rust：TCP 中继、SOCKS5/UDP 检测、单连接 TLS 心跳、监控异步编排、候选地区与订阅策略、Clash 协议、DNS 双栈 TCP/UDP 转发、恢复事务、配置变换与 CLI 输出解析。macOS 的 SwiftUI 与 Windows 的 WPF 通过同一版本化 C ABI 调用它；界面、进程、系统权限、原生防火墙和网络设置操作保留在平台适配层。
+
+macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Rust DLL。Windows 使用 MSIX 激活保留 ChatGPT 应用包身份，通过 ProxyBridge 进程规则和受保护 DNS 转发流量；上文的 macOS 代理启动参数与环境变量注入不适用于 Windows。Windows 的安装、构建和恢复说明见 [windows/README.md](windows/README.md)。
+
+开发需安装 rustup；仓库固定 Rust 工具链和 Cargo/NuGet 依赖。`make test` 构建共享核心并运行 Rust、Swift 测试；`make verify` 还检查 macOS Universal 包。Windows 运行 `powershell -File scripts/verify-windows.ps1`，随后使用 `scripts/package-windows.ps1 -SkipBuild` 生成安装包。同一套真实 SOCKS/TLS 与 DNS 测试可在两端执行。
+
+详细验证结果与边界见 [Windows 与共享核心验收记录](docs/validation-windows-2026-11-06.md) 和 [macOS helper 特权验收记录](docs/validation-macos-helper-2026-11-06.md)。
 
 ## 构建
 
@@ -28,7 +38,7 @@ make verify
 
 ## 系统 DNS 保护
 
-点击“启动 ChatGPT”时先启用 DNS / IPv4 保护，也可在主窗口单独启用。单独启用时自动重启已经打开的 GPT，使旧连接采用新策略；GPT 未运行时不额外启动。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。2.3.1 使用辅助服务协议 2，首次启用会先恢复旧事务再升级服务。
+点击“启动 ChatGPT”时先启用 DNS / IPv4 保护，也可在主窗口单独启用。单独启用时自动重启已经打开的 GPT，使旧连接采用新策略；GPT 未运行时不额外启动。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。2.3.3 使用辅助服务协议 3，首次启用会先恢复旧事务再升级服务。
 
 如果 GPT 未在正常退出请求后 15 秒内结束，或重新打开失败，会恢复网络设置并显示错误，不强制终止 GPT。等待过程中可取消。此时请手动退出 GPT 后重试。
 
@@ -44,7 +54,7 @@ make verify
 
 辅助服务独立于窗口进程检查链路、IPv4 策略、网络服务和节点变化。连续两次检查失败、Clash 配置重新加载、启动器失去响应或退出时，自动还原 DNS、Clash 配置和自身 PF 规则；恢复时保留用户随后手动修改的 DNS、节点和模式，并还原本次临时覆盖的 IPv6 开关。用户主动开启 IPv6 或加载新配置时保留其选择。主窗口显示“保护已关闭”，不自动重新开启。恢复后系统可以使用原 DNS 和 IPv6，届时不保证受保护。
 
-恢复记录位于 `/Library/Application Support/ChatGPT Proxy DNS/recovery.json`，仅 root 可读，可能包含原 Clash 配置。正常恢复成功后删除；崩溃或重启后优先恢复未完成的事务。辅助服务只接受安装用户或 root 的固定控制命令，不记录查询域名及订阅凭据。
+恢复记录位于 `/Library/Application Support/ChatGPT Proxy DNS/recovery-v3.json`（升级时仍读取旧版 `recovery.json`），仅 root 可读，可能包含原 Clash 配置。正常恢复成功后删除；崩溃或重启后优先恢复未完成的事务。辅助服务只接受安装用户或 root 的固定控制命令，不记录查询域名及订阅凭据。
 
 应用无法打开时，可在终端恢复：
 

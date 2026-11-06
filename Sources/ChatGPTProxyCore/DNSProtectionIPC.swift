@@ -73,97 +73,19 @@ public enum DNSProtectionIPC {
 
 public enum DNSPacket {
     public static func query(name: String, type: UInt16 = 1, id: UInt16 = .random(in: 0...UInt16.max)) -> Data {
-        var data = Data([UInt8(id >> 8), UInt8(id & 255), 1, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-        for label in name.split(separator: ".") {
-            data.append(UInt8(label.utf8.count)); data.append(contentsOf: label.utf8)
-        }
-        data.append(contentsOf: [0, UInt8(type >> 8), UInt8(type & 255), 0, 1])
-        return data
+        let bytes: [UInt8] = (try? RustCore().call(["op":"dnsQuery", "name":name, "type":type, "id":id])) ?? []
+        return Data(bytes)
     }
-
     public static func isValidResponse(_ response: Data, to query: Data) -> Bool {
-        guard query.count >= 12, response.count >= query.count,
-              response.prefix(2) == query.prefix(2), response[2] & 0x80 != 0,
-              response[2] & 0x02 == 0, [0, 3].contains(response[3] & 0x0f),
-              response[4] == 0, response[5] == 1 else { return false }
-        return response[12..<query.count] == query[12...]
+        (try? RustCore().call(["op":"dnsValid", "response":Array(response), "query":Array(query)])) ?? false
     }
-
     public static func probe(port: UInt16, timeout: Int = 5, tcp: Bool = false, host: String = "127.0.0.1") throws {
-        let query = query(name: "gptproxy-\(UUID().uuidString.lowercased()).example.com")
-        _ = try exchange(query, port: port, timeout: timeout, tcp: tcp, host: host)
+        let _: Bool = try RustCore().call(["op":"dnsProbe", "port":port, "timeout":timeout, "tcp":tcp, "host":host])
     }
-
     public static func assertIPv4Responses(a: Data, aQuery: Data, aaaa: Data, aaaaQuery: Data) throws {
-        guard isValidResponse(a, to: aQuery), a[3] & 0x0f == 0,
-              Int(a[6]) << 8 | Int(a[7]) > 0 else {
-            throw MonitorError.message("代理内 IPv4 DNS 解析不可用")
-        }
-        guard isValidResponse(aaaa, to: aaaaQuery), aaaa[3] & 0x0f == 0,
-              aaaa[6] == 0, aaaa[7] == 0 else {
-            throw MonitorError.message("DNS 仍返回 AAAA 或查询失败，IPv4 保护未生效")
-        }
+        let _: Bool = try RustCore().call(["op":"dnsAssertIPv4", "a":Array(a), "aQuery":Array(aQuery), "aaaa":Array(aaaa), "aaaaQuery":Array(aaaaQuery)])
     }
-
     public static func probeIPv4Only(port: UInt16) throws {
-        let a = query(name: "one.one.one.one"), aaaa = query(name: "one.one.one.one", type: 28)
-        try assertIPv4Responses(a: exchange(a, port: port), aQuery: a,
-                                aaaa: exchange(aaaa, port: port), aaaaQuery: aaaa)
-    }
-
-    private static func exchange(_ query: Data, port: UInt16, timeout: Int = 5,
-                                 tcp: Bool = false, host: String = "127.0.0.1") throws -> Data {
-        let ipv6 = host.contains(":")
-        let fd = socket(ipv6 ? AF_INET6 : AF_INET, tcp ? SOCK_STREAM : SOCK_DGRAM, 0)
-        guard fd >= 0 else { throw MonitorError.message("无法创建 DNS 检测连接") }
-        defer { close(fd) }
-        DNSProtectionIPC.configure(fd, seconds: timeout)
-        let result: Int32
-        if ipv6 {
-            var address = sockaddr_in6()
-            address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size); address.sin6_family = sa_family_t(AF_INET6)
-            address.sin6_port = port.bigEndian; inet_pton(AF_INET6, host, &address.sin6_addr)
-            result = withUnsafePointer(to: &address) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
-            }
-        } else {
-            var address = sockaddr_in()
-            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
-            address.sin_port = port.bigEndian; inet_pton(AF_INET, host, &address.sin_addr)
-            result = withUnsafePointer(to: &address) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-            }
-        }
-        guard result == 0 else { throw MonitorError.message("DNS 入口不可达") }
-        var payload = query
-        if tcp { payload = Data([UInt8(query.count >> 8), UInt8(query.count & 255)]) + query }
-        var sent = 0
-        while sent < payload.count {
-            let count = payload.withUnsafeBytes { Darwin.send(fd, $0.baseAddress!.advanced(by: sent), payload.count - sent, 0) }
-            guard count > 0 else { throw MonitorError.message("DNS 检测发送失败") }
-            sent += count
-        }
-        func read(_ count: Int) throws -> Data {
-            var result = Data()
-            while result.count < count {
-                var buffer = [UInt8](repeating: 0, count: count - result.count)
-                let received = recv(fd, &buffer, buffer.count, 0)
-                guard received > 0 else { throw MonitorError.message("代理内 DNS 查询超时或连接关闭") }
-                result.append(contentsOf: buffer.prefix(received))
-            }
-            return result
-        }
-        let response: Data
-        if tcp {
-            let size = try read(2)
-            response = try read(Int(size[0]) << 8 | Int(size[1]))
-        } else {
-            var buffer = [UInt8](repeating: 0, count: 65535)
-            let count = recv(fd, &buffer, buffer.count, 0)
-            guard count > 0 else { throw MonitorError.message("代理内 DNS 查询超时") }
-            response = Data(buffer.prefix(count))
-        }
-        guard isValidResponse(response, to: query) else { throw MonitorError.message("代理内 DNS 返回无效响应") }
-        return response
+        let _: Bool = try RustCore().call(["op":"dnsProbe", "port":port, "ipv4Only":true])
     }
 }

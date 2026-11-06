@@ -2,13 +2,8 @@ import Foundation
 
 public enum ProxyBridgeConfigurationParser {
     public static func isBundledProfileValid(_ data: Data) -> Bool {
-        guard let profile = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              profile["name"] as? String == "ChatGPT Only",
-              profile["dnsEnabled"] as? Bool == false,
-              let configs = profile["proxyConfigs"],
-              let encoded = try? JSONSerialization.data(withJSONObject: configs)
-        else { return false }
-        return matchesExpected(configs: encoded, rules: profile["proxyRules"])
+        guard let profile = try? JSONSerialization.jsonObject(with: data) else { return false }
+        return (try? RustCore().call(["op":"validateProxyProfile", "platform":"macos", "profile":profile])) ?? false
     }
 
     public static func isChatGPTOnlyProfileActive(in propertyListData: Data) -> Bool {
@@ -37,26 +32,14 @@ public enum ProxyBridgeConfigurationParser {
     }
 
     private static func matchesExpected(configs: Any?, rules: Any?) -> Bool {
-        guard
-            let configsData = configs as? Data,
-            let decodedConfigs = try? JSONDecoder().decode([ProxyConfig].self, from: configsData),
-            let decodedRules = decodeRules(from: rules)
-        else {
-            return false
-        }
-        return decodedConfigs == [.chatGPTRelay] && decodedRules == [.localDirect, .ipv6Block, .externalProxy]
+        guard let configsData = configs as? Data,
+              let configs = try? JSONSerialization.jsonObject(with: configsData),
+              let rules else { return false }
+        return (try? RustCore().call(["op":"validateProxyProfile", "platform":"macos", "profile":[
+            "name":"ChatGPT Only", "dnsEnabled":false, "proxyConfigs":configs, "proxyRules":rules
+        ]])) ?? false
     }
 
-    private static func decodeRules(from value: Any?) -> [ProxyRule]? {
-        guard
-            let dictionaries = value as? [[String: Any]],
-            JSONSerialization.isValidJSONObject(dictionaries),
-            let data = try? JSONSerialization.data(withJSONObject: dictionaries)
-        else {
-            return nil
-        }
-        return try? JSONDecoder().decode([ProxyRule].self, from: data)
-    }
 }
 
 public enum CollisionSafeDestination {
@@ -79,68 +62,4 @@ public enum CollisionSafeDestination {
             suffix += 1
         }
     }
-}
-
-private struct ProxyConfig: Decodable, Equatable {
-    let id: String
-    let type: String
-    let host: String
-    let port: Int
-    let username: String?
-    let password: String?
-
-    static let chatGPTRelay = ProxyConfig(
-        id: "chatgpt-proxy-relay",
-        type: "socks5",
-        host: "127.0.0.1",
-        port: Int(ProxyConfiguration.relayPort),
-        username: nil,
-        password: nil
-    )
-}
-
-private struct ProxyRule: Decodable, Equatable {
-    let processNames: String
-    let targetHosts: String
-    let targetPorts: String
-    let ruleProtocol: String
-    let action: String
-    let enabled: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case processNames
-        case targetHosts
-        case targetPorts
-        case ruleProtocol = "protocol"
-        case action
-        case enabled
-    }
-
-    static let localDirect = ProxyRule(
-        processNames: ChatGPTApplicationCompatibility.proxyBridgeProcessNames,
-        targetHosts: "localhost;127.0.0.1;::1;192.168.*.*;192.168.100.81",
-        targetPorts: "*",
-        ruleProtocol: "TCP",
-        action: "DIRECT",
-        enabled: true
-    )
-
-    // UDP destination filters are ignored by ProxyBridge 4.1.1. Never use BOTH here.
-    static let ipv6Block = ProxyRule(
-        processNames: ChatGPTApplicationCompatibility.proxyBridgeProcessNames,
-        targetHosts: "::/0",
-        targetPorts: "*",
-        ruleProtocol: "TCP",
-        action: "BLOCK",
-        enabled: true
-    )
-
-    static let externalProxy = ProxyRule(
-        processNames: ChatGPTApplicationCompatibility.proxyBridgeProcessNames,
-        targetHosts: "*",
-        targetPorts: "*",
-        ruleProtocol: "BOTH",
-        action: "chatgpt-proxy-relay",
-        enabled: true
-    )
 }

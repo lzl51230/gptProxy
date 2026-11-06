@@ -1,7 +1,6 @@
-import CCodexTransport
 import Foundation
 
-public struct CodexHeartbeat: Sendable, Equatable {
+public struct CodexHeartbeat: Codable, Sendable, Equatable {
     public let isHealthy: Bool
     public let latencyMilliseconds: Int?
     /// Time between the first and most recent valid heartbeat on this physical connection.
@@ -22,95 +21,66 @@ protocol CodexConnection: Sendable {
     func close() async
 }
 
-/// The worker owns libcurl; cancellation only shuts down its socket under a lock.
-/// A session can open exactly one socket, so libcurl cannot silently reconnect.
+/// Native lifetime adapter; the Rust core owns SOCKS, TLS, HTTP and observation timing.
 public final class CodexConnectionSession: CodexConnection, @unchecked Sendable {
     public static let targetURL = "https://chatgpt.com/backend-api/codex/models"
+    private let core = RustCore()
     private let queue = DispatchQueue(label: "local.alex.chatgpt-proxy.codex-connection", qos: .utility)
     private let lock = NSLock()
-    private var handle: OpaquePointer?
+    private var opened = false
     private var cancelled = false
-    private var firstHeartbeat: ContinuousClock.Instant?
-    private var lastHeartbeat: ContinuousClock.Instant?
-    private let now: @Sendable () -> ContinuousClock.Instant
-    private let proxy: String
+    private let now: (@Sendable () -> ContinuousClock.Instant)?
+    private let origin: ContinuousClock.Instant?
+    private let port: UInt16
     private let target: String
     private let caFile: String?
 
-    public convenience init(port: UInt16) {
-        self.init(port: port, target: Self.targetURL)
+    public convenience init(port: UInt16) { self.init(port: port, target: Self.targetURL) }
+    init(port: UInt16, target: String, caFile: String? = nil, now: (@Sendable () -> ContinuousClock.Instant)? = nil) {
+        self.port = port; self.target = target; self.caFile = caFile; self.now = now; origin = now?()
     }
-
-    init(port: UInt16, target: String, caFile: String? = nil, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
-        proxy = "socks5h://127.0.0.1:\(port)"
-        self.target = target
-        self.caFile = caFile
-        self.now = now
-    }
-
-    deinit { if let handle { cgp_codex_destroy(handle) } }
-
     public func heartbeat() async throws -> CodexHeartbeat {
         try Task.checkCancellation()
-        let heartbeat: CodexHeartbeat = try await withTaskCancellationHandler {
+        let result: CodexHeartbeat = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
-                    do { continuation.resume(returning: try self.performHeartbeat()) }
-                    catch { continuation.resume(throwing: error) }
+                    do {
+                        try self.lock.withLock {
+                            guard !self.cancelled else { throw CancellationError() }
+                            if !self.opened {
+                                var request: [String: Any] = ["op":"heartbeatOpen", "port":self.port, "target":self.target]
+                                if let caFile = self.caFile { request["caFile"] = caFile }
+                                let _: Bool = try self.core.call(request)
+                                self.opened = true
+                            }
+                        }
+                        var request: [String:Any] = ["op":"heartbeat"]
+                        if let now = self.now, let origin = self.origin { request["nowSeconds"] = (now() - origin).seconds }
+                        let heartbeat: CodexHeartbeat = try self.core.call(request)
+                        continuation.resume(returning: heartbeat)
+                    } catch {
+                        if self.lock.withLock({ self.cancelled }) { continuation.resume(throwing: CancellationError()) }
+                        else { continuation.resume(throwing: error) }
+                    }
                 }
             }
         } onCancel: { self.cancel() }
         try Task.checkCancellation()
-        return heartbeat
+        return result
     }
-
-    private func performHeartbeat() throws -> CodexHeartbeat {
-        let remaining = lastHeartbeat.map { $0.advanced(by: .seconds(10)) - now() } ?? .seconds(10)
-        lock.lock()
-        if cancelled { lock.unlock(); throw CancellationError() }
-        if remaining <= .zero {
-            lock.unlock()
-            return failed("连续 10 秒未收到有效心跳")
-        }
-        if handle == nil { handle = cgp_codex_create(proxy, target, caFile) }
-        let connection = handle
-        lock.unlock()
-        guard let connection else { return failed("无法创建 Codex 检测连接") }
-        let result = cgp_codex_heartbeat(connection, max(1, Int(remaining.seconds * 1000)))
-        if result == 2 { throw CancellationError() }
-        if result != 0 { return failed(String(cString: cgp_codex_error(connection))) }
-        let instant = now()
-        firstHeartbeat = firstHeartbeat ?? instant
-        lastHeartbeat = instant
-        return CodexHeartbeat(isHealthy: true, latencyMilliseconds: Int(cgp_codex_latency_ms(connection)),
-                              connectionSeconds: (instant - firstHeartbeat!).seconds)
-    }
-
-    private func failed(_ reason: String) -> CodexHeartbeat {
-        let seconds = firstHeartbeat.flatMap { first in lastHeartbeat.map { ($0 - first).seconds } } ?? 0
-        disposeHandle()
-        firstHeartbeat = nil
-        lastHeartbeat = nil
-        return CodexHeartbeat(isHealthy: false, connectionSeconds: seconds, failureReason: reason)
-    }
-
-    private func disposeHandle() {
-        lock.lock()
-        if let handle { cgp_codex_destroy(handle); self.handle = nil }
-        lock.unlock()
-    }
-
     public func cancel() {
-        lock.lock()
-        cancelled = true
-        if let handle { cgp_codex_cancel(handle) }
-        lock.unlock()
+        lock.withLock {
+            cancelled = true
+            let _: Bool? = try? core.call(["op":"heartbeatCancel"])
+        }
     }
-
     public func close() async {
         cancel()
         await withCheckedContinuation { continuation in
-            queue.async { self.disposeHandle(); continuation.resume() }
+            queue.async {
+                let _: Bool? = try? self.core.call(["op":"heartbeatClose"])
+                continuation.resume()
+            }
         }
     }
 }

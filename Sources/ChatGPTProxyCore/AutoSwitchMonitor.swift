@@ -38,23 +38,6 @@ public enum MonitorPhase: String, Sendable {
     case connecting, maintaining, testing, validating, retrying, paused, stopped
 }
 
-private struct MonitorContext: Equatable {
-    let socket: String
-    let mode: String
-    let selection: [String: String]
-    let nodes: [String]?
-    let configuration: Data?
-
-    init(_ snapshot: ClashSnapshot, signature: Data?) {
-        socket = snapshot.socket; mode = snapshot.mode
-        selection = snapshot.selectionSignature
-        nodes = snapshot.proxies["GLOBAL"]?.all
-        configuration = signature
-    }
-}
-
-private struct MonitorContextChanged: Error {}
-
 @MainActor
 public final class AutoSwitchMonitor: ObservableObject {
     @Published public private(set) var status = "等待监控"
@@ -71,6 +54,7 @@ public final class AutoSwitchMonitor: ObservableObject {
     @Published public private(set) var regionNodeCounts: [String: Int] = [:]
     @Published public private(set) var regionCatalogStatus: String?
     @Published public private(set) var isRefreshingRegions = false
+    private let policyCore = RustCore()
     private let defaults: UserDefaults
     private static let regionsKey = "monitorRegionPreferences"
     private var preferenceRevision = 0
@@ -79,17 +63,11 @@ public final class AutoSwitchMonitor: ObservableObject {
     private var port: UInt16 = 7890
     private var pendingStop: Task<Void, Never>?
     private var connection: (any CodexConnection)?
-    private var context: MonitorContext?
     private var ticking = false
-    private var recoveryPending = false
-    private var failedNode: String?
-    private var recoveryRound = 0
-    private var recoveryAttempt = 0
-    private var retryAt: ContinuousClock.Instant?
     private var nextDelay: Duration = .seconds(2)
     private let operations: AutoSwitchOperations
+    private let clockOrigin: ContinuousClock.Instant
     private let writesLog: Bool
-    private var cooldownUntil: ContinuousClock.Instant?
     private var activity: NSObjectProtocol?
     private let logger = Logger(subsystem: "local.alex.chatgpt-proxy", category: "Monitor")
     public static let logURL = FileManager.default.homeDirectoryForCurrentUser
@@ -98,6 +76,7 @@ public final class AutoSwitchMonitor: ObservableObject {
     public convenience init() { self.init(operations: .live, writesLog: true) }
 
     init(operations: AutoSwitchOperations, writesLog: Bool = false, defaults: UserDefaults = .standard) {
+        clockOrigin = operations.now()
         self.writesLog = writesLog
         self.operations = operations
         self.defaults = defaults
@@ -131,19 +110,10 @@ public final class AutoSwitchMonitor: ObservableObject {
     }
 
     private func candidatesByRegion(_ snapshot: ClashSnapshot, resolver: NodeOriginResolver) throws -> [String: [String]] {
-        guard let current = snapshot.current, let source = resolver.origins[current],
-              NodeOriginResolver.region(current) != nil else {
-            throw MonitorError.message("节点订阅或地区不明确，保持原节点")
-        }
-        let excluded = Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"])
-        var result: [String: [String]] = [:]
-        for name in Set(snapshot.proxies["GLOBAL"]?.all ?? []).sorted() {
-            guard let proxy = snapshot.proxies[name], proxy.all == nil,
-                  !excluded.contains(proxy.type.uppercased()), resolver.origins[name] == source,
-                  let region = NodeOriginResolver.region(name) else { continue }
-            result[region, default: []].append(name)
-        }
-        return result
+        guard let current = snapshot.current else { throw MonitorError.message("无法解析当前节点") }
+        let proxies = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot.proxies))
+        return try policyCore.call(["op":"monitorCandidates", "current":current, "origins":resolver.origins,
+                                    "names":snapshot.proxies["GLOBAL"]?.all ?? [], "proxies":proxies])
     }
 
     private func updateRegionCatalog(_ candidates: [String: [String]]) {
@@ -225,10 +195,9 @@ public final class AutoSwitchMonitor: ObservableObject {
     }
 
     private func clearObservation() {
-        context = nil
         connectionSeconds = 0; latency = nil; consecutiveFailures = 0
-        disconnectReason = nil; retrySeconds = nil; retryAt = nil
-        recoveryPending = false; failedNode = nil; recoveryRound = 0; recoveryAttempt = 0
+        disconnectReason = nil; retrySeconds = nil
+        _ = try? policyCore.object(["op":"monitorWorkflow", "action":"reset"])
     }
 
     private func closeConnection() async {
@@ -272,40 +241,55 @@ public final class AutoSwitchMonitor: ObservableObject {
         guard revision == preferenceRevision, lifecycle == lifecycleRevision else { throw CancellationError() }
     }
 
-    private func signature() async throws -> Data? {
-        do { return try await operations.resolver().signature }
-        catch is CancellationError { throw CancellationError() }
-        catch { return nil }
+    private func publish(_ value: [String:Any]) {
+        status = value["status"] as? String ?? status
+        phase = MonitorPhase(rawValue: value["phase"] as? String ?? "") ?? .retrying
+        currentNode = value["currentNode"] as? String ?? "未知"
+        latency = value["latency"] as? Int
+        connectionSeconds = value["connectionSeconds"] as? Double ?? 0
+        consecutiveFailures = value["consecutiveFailures"] as? Int ?? 0
+        disconnectReason = value["disconnectReason"] as? String
+        retrySeconds = value["retrySeconds"] as? Int
+        lastSwitch = value["lastSwitch"] as? String ?? lastSwitch
+        nextDelay = .seconds(value["nextDelay"] as? Double ?? 2)
+        if let candidates = value["candidates"] as? [String:[String]], !candidates.isEmpty { updateRegionCatalog(candidates) }
     }
 
-    private func checkedSnapshot(_ expected: ClashSnapshot, signature: Data?, revision: Int, lifecycle: Int) async throws -> ClashSnapshot {
-        try requireCurrent(revision, lifecycle)
-        let fresh = try await operations.snapshot(port)
-        let freshSignature = try await self.signature()
-        try requireCurrent(revision, lifecycle)
-        guard MonitorContext(fresh, signature: freshSignature) == MonitorContext(expected, signature: signature) else {
-            throw MonitorContextChanged()
+    // This adapter only performs requested I/O. Ordering, context checks, retry,
+    // recovery and candidate acceptance are owned by the shared Rust workflow.
+    private func perform(_ effect: [String:Any]) async throws -> Any {
+        let args = effect["args"] as? [String:Any] ?? [:]
+        switch effect["op"] as? String {
+        case "snapshot":
+            let snapshot = try await operations.snapshot(port)
+            let resolver = try? await operations.resolver()
+            return ["socket":snapshot.socket, "mode":snapshot.mode,
+                    "current":snapshot.current as Any? ?? NSNull(), "selection":snapshot.selectionSignature,
+                    "proxies":try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot.proxies)),
+                    "signature":resolver.map { Array($0.signature) } as Any? ?? NSNull(),
+                    "origins":resolver?.origins ?? [:]] as [String:Any]
+        case "heartbeat":
+            if connection == nil { connection = operations.makeConnection(port) }
+            let result = try await connection!.heartbeat()
+            record("heartbeat", ["node":currentNode, "seconds":String(result.connectionSeconds),
+                                 "delay":result.latencyMilliseconds.map(String.init) ?? "failed", "reason":result.failureReason ?? ""])
+            return try JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
+        case "closeConnection": await closeConnection(); return NSNull()
+        case "sleep": try await operations.sleep(.seconds(effect["args"] as? Double ?? 0)); return NSNull()
+        case "delays":
+            let names = args["names"] as? [String] ?? [], socket = args["socket"] as? String ?? ""
+            let measure = operations.delay
+            return await withTaskGroup(of: (String,Int?).self) { group in
+                for name in names { group.addTask { (name, try? await measure(socket,name)) } }
+                var results: [String:Int] = [:]
+                for await (name,delay) in group { if let delay { results[name] = delay } }
+                return results
+            }
+        case "connections": return try await operations.connections(args["socket"] as? String ?? "", args["node"] as? String ?? "")
+        case "select": try await operations.select(args["socket"] as? String ?? "", args["name"] as? String ?? ""); return NSNull()
+        case "close": try await operations.close(args["socket"] as? String ?? "", args["id"] as? String ?? ""); return NSNull()
+        default: throw MonitorError.message("Unknown shared monitor effect")
         }
-        return fresh
-    }
-
-    private func publish(_ heartbeat: CodexHeartbeat) {
-        latency = heartbeat.latencyMilliseconds
-        connectionSeconds = heartbeat.connectionSeconds
-        if !heartbeat.isHealthy { disconnectReason = heartbeat.failureReason ?? "连接失败" }
-        record("heartbeat", ["node": currentNode, "seconds": String(connectionSeconds),
-                             "delay": latency.map(String.init) ?? "failed", "reason": heartbeat.failureReason ?? ""])
-    }
-
-    private func scheduleRetry() {
-        let seconds = min(30, 1 << min(5, recoveryAttempt + 1))
-        recoveryAttempt += 1
-        retrySeconds = seconds
-        retryAt = operations.now().advanced(by: .seconds(seconds))
-        nextDelay = .seconds(seconds)
-        phase = .retrying
-        status = "全部候选暂不可用，\(seconds) 秒后重试"
-        record("recoveryRetry", ["seconds": String(seconds)])
     }
 
     func tick() async {
@@ -313,196 +297,29 @@ public final class AutoSwitchMonitor: ObservableObject {
         ticking = true
         defer { ticking = false }
         let revision = preferenceRevision, lifecycle = lifecycleRevision
-        nextDelay = .seconds(2)
         do {
-            let snapshot: ClashSnapshot?
-            do { snapshot = try await operations.snapshot(port) }
-            catch is CancellationError { throw CancellationError() }
-            catch { snapshot = nil; record("controllerUnavailable", ["message": error.localizedDescription]) }
-            let sourceSignature = snapshot == nil ? nil : try await signature()
-            try requireCurrent(revision, lifecycle)
-            let latestContext = snapshot.map { MonitorContext($0, signature: sourceSignature) }
-            if context != latestContext {
-                await closeConnection()
-                try requireCurrent(revision, lifecycle)
-                clearObservation()
-                context = latestContext
+            let preferences = try JSONSerialization.jsonObject(with: JSONEncoder().encode(regions))
+            var request: [String:Any] = ["op":"monitorWorkflow", "action":"begin", "regions":preferences]
+            while true {
+                try requireCurrent(revision,lifecycle)
+                request["now"] = (operations.now() - clockOrigin).seconds
+                guard let response = try policyCore.object(request) as? [String:Any],
+                      let state = response["state"] as? [String:Any] else { throw MonitorError.message("Invalid shared monitor response") }
+                publish(state)
+                if response["done"] as? Bool == true { break }
+                guard let effect = response["effect"] as? [String:Any], let id = effect["id"] else { throw MonitorError.message("Missing shared monitor effect") }
+                request = ["op":"monitorWorkflow", "action":"complete", "id":id]
+                do { request["value"] = try await perform(effect) }
+                catch is CancellationError { throw CancellationError() }
+                catch { request["error"] = error.localizedDescription }
             }
-            currentNode = snapshot?.current ?? "未知"
-            // A missing controller or rule/direct mode must not prevent network observation.
-            if recoveryPending && (snapshot?.mode != "global" || sourceSignature == nil) {
-                recoveryPending = false
-            }
-            if !recoveryPending {
-                if connection == nil { connection = operations.makeConnection(port) }
-                let heartbeat = try await connection!.heartbeat()
-                try requireCurrent(revision, lifecycle)
-                if let snapshot {
-                    _ = try await checkedSnapshot(snapshot, signature: sourceSignature, revision: revision, lifecycle: lifecycle)
-                }
-                publish(heartbeat)
-                if heartbeat.isHealthy {
-                    if heartbeat.connectionSeconds >= 60 { consecutiveFailures = 0 }
-                    phase = .maintaining
-                    status = snapshot?.mode == "global" ? "Codex 长连接正常" : "Codex 长连接正常；仅全局模式支持自动切换"
-                    return
-                }
-                await closeConnection()
-                try requireCurrent(revision, lifecycle)
-                consecutiveFailures = heartbeat.connectionSeconds >= 60 ? 0 : min(2, consecutiveFailures + 1)
-                phase = .connecting
-                status = "Codex 连接断开（未满 60 秒失败 \(consecutiveFailures)/2）"
-                nextDelay = .seconds(1)
-                guard consecutiveFailures >= 2 else { return }
-                recoveryPending = true
-                failedNode = snapshot?.current
-                recoveryRound = 0; recoveryAttempt = 0
-            }
-            guard let snapshot, snapshot.mode == "global", sourceSignature != nil else {
-                phase = .retrying
-                status = "Codex 连接不可用；等待 Clash Party 全局模式及订阅配置"
-                return
-            }
-            if let retryAt, operations.now() < retryAt {
-                nextDelay = retryAt - operations.now()
-                return
-            }
-            retrySeconds = nil; retryAt = nil
-            try await recover(snapshot, revision: revision, lifecycle: lifecycle)
-            try requireCurrent(revision, lifecycle)
-            if recoveryPending { scheduleRetry() }
-        } catch is CancellationError {
-            guard lifecycle == lifecycleRevision else { return }
-            await closeConnection()
-            guard lifecycle == lifecycleRevision else { return }
-            clearObservation()
-            phase = .connecting
-            status = "Codex 监控已取消，等待重新连接"
-        }
-        catch is MonitorContextChanged {
-            guard lifecycle == lifecycleRevision else { return }
-            await closeConnection()
-            guard lifecycle == lifecycleRevision else { return }
-            clearObservation()
-            phase = .connecting
-            status = "节点或配置已变化，重新建立 Codex 长连接"
-            record("contextChanged")
         } catch {
-            guard lifecycle == lifecycleRevision, !Task.isCancelled else { return }
+            guard lifecycle == lifecycleRevision else { return }
             await closeConnection()
             guard lifecycle == lifecycleRevision else { return }
-            latency = nil
-            status = error.localizedDescription
-            phase = .retrying
-            record("error", ["message": status])
-            if recoveryPending { scheduleRetry() }
+            clearObservation()
+            phase = .connecting
+            status = error is CancellationError ? "Codex 监控已取消，等待重新连接" : error.localizedDescription
         }
-    }
-
-    private func recover(_ original: ClashSnapshot, revision: Int, lifecycle: Int) async throws {
-        guard let current = original.current else { throw MonitorError.message("无法解析当前节点") }
-        let resolver = try await operations.resolver()
-        try requireCurrent(revision, lifecycle)
-        guard context == MonitorContext(original, signature: resolver.signature) else { throw MonitorContextChanged() }
-        let candidates: [String: [String]]
-        do { candidates = try candidatesByRegion(original, resolver: resolver) }
-        catch { recoveryPending = false; throw error }
-        updateRegionCatalog(candidates)
-        guard let region = NodeOriginResolver.region(current) else { return }
-        let order = [region] + regions.filter { $0.isEnabled && $0.code != region }.map(\.code)
-        recoveryRound += 1
-        var expected = original
-        for targetRegion in order {
-            let nodes = (candidates[targetRegion] ?? []).filter { recoveryRound > 1 || $0 != failedNode }
-            phase = .testing
-            status = "Codex 测速 \(targetRegion) · \(nodes.count) 个节点（≤800 ms）"
-            record("testing", ["region": targetRegion, "count": String(nodes.count)])
-            var delays: [String: Int] = [:]
-            for offset in stride(from: 0, to: nodes.count, by: 4) {
-                try requireCurrent(revision, lifecycle)
-                let batch = Array(nodes[offset..<min(offset + 4, nodes.count)])
-                let measure = operations.delay
-                let results = await withTaskGroup(of: (String, Int?).self) { group in
-                    for name in batch { group.addTask { (name, try? await measure(original.socket, name)) } }
-                    var values: [(String, Int?)] = []
-                    for await value in group { values.append(value) }
-                    return values
-                }
-                try requireCurrent(revision, lifecycle)
-                for (name, delay) in results {
-                    if let delay, (1...AutoSwitchPolicy.threshold).contains(delay) { delays[name] = delay }
-                    record("nodeTest", ["node": name, "delay": delay.map(String.init) ?? "failed"])
-                }
-            }
-            let ranked = delays.keys.sorted {
-                delays[$0] == delays[$1] ? $0 < $1 : delays[$0]! < delays[$1]!
-            }
-            for candidate in ranked {
-                var before = try await checkedSnapshot(expected, signature: resolver.signature, revision: revision, lifecycle: lifecycle)
-                if before.current != candidate {
-                    if let until = cooldownUntil, operations.now() < until {
-                        status = "等待节点切换冷却（5 秒）"
-                        try await operations.sleep(until - operations.now())
-                        before = try await checkedSnapshot(expected, signature: resolver.signature, revision: revision, lifecycle: lifecycle)
-                    }
-                    await closeConnection()
-                    let ids = (try? await operations.connections(before.socket, before.current ?? "")) ?? []
-                    _ = try await checkedSnapshot(before, signature: resolver.signature, revision: revision, lifecycle: lifecycle)
-                    // A failed response may still mean the PUT took effect. Always read back,
-                    // and reserve cooldown before submitting so a lost response cannot cause a rapid retry.
-                    cooldownUntil = operations.now().advanced(by: .seconds(5))
-                    do { try await operations.select(before.socket, candidate) }
-                    catch is CancellationError { throw CancellationError() }
-                    catch { record("selectionResponseFailed", ["message": error.localizedDescription]) }
-                    let confirmed = try await operations.snapshot(port)
-                    let freshSignature = try await signature()
-                    try requireCurrent(revision, lifecycle)
-                    guard confirmed.socket == before.socket, confirmed.mode == "global",
-                          confirmed.proxies["GLOBAL"]?.all == before.proxies["GLOBAL"]?.all,
-                          freshSignature == resolver.signature, confirmed.current == candidate else {
-                        throw MonitorContextChanged()
-                    }
-                    expected = confirmed
-                    context = MonitorContext(confirmed, signature: resolver.signature)
-                    currentNode = candidate
-                    for id in ids {
-                        try requireCurrent(revision, lifecycle)
-                        do { try await operations.close(before.socket, id) }
-                        catch is CancellationError { throw CancellationError() }
-                        catch { record("connectionCleanupFailed", ["id": id]) }
-                    }
-                    record("candidateSelected", ["node": candidate])
-                }
-                await closeConnection()
-                try requireCurrent(revision, lifecycle)
-                let candidateConnection = operations.makeConnection(port)
-                connection = candidateConnection
-                connectionSeconds = 0; latency = nil
-                phase = .validating
-                status = "验证 \(candidate) · 需保持 10 秒 Codex 长连接"
-                while true {
-                    try requireCurrent(revision, lifecycle)
-                    let heartbeat = try await candidateConnection.heartbeat()
-                    try requireCurrent(revision, lifecycle)
-                    _ = try await checkedSnapshot(expected, signature: resolver.signature, revision: revision, lifecycle: lifecycle)
-                    publish(heartbeat)
-                    if !heartbeat.isHealthy { break }
-                    if heartbeat.connectionSeconds >= 10 {
-                        consecutiveFailures = 0; recoveryPending = false
-                        recoveryRound = 0; recoveryAttempt = 0; retryAt = nil; retrySeconds = nil
-                        phase = .maintaining
-                        status = "Codex 长连接验收通过"
-                        lastSwitch = "\(current) → \(candidate)（\(delays[candidate]!)ms）"
-                        record("switched", ["from": current, "to": candidate, "delay": String(delays[candidate]!)])
-                        return
-                    }
-                    try await operations.sleep(.seconds(2))
-                }
-                record("candidateFailed", ["node": candidate, "reason": disconnectReason ?? ""])
-                await closeConnection()
-            }
-            record("regionUnavailable", ["region": targetRegion])
-        }
-        await closeConnection()
     }
 }

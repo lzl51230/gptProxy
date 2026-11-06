@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 public struct ProxyHealthResult: Sendable, Equatable {
@@ -72,59 +71,6 @@ public enum ProxyHealthError: LocalizedError {
 
 private enum SOCKS5Probe {
     static func probe(port: UInt16) throws -> Bool {
-        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { throw ProxyHealthError.socketCreationFailed }
-        defer { close(descriptor) }
-
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = port.bigEndian
-        inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
-
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard connected == 0 else { throw ProxyHealthError.connectionFailed }
-
-        try writeAll([0x05, 0x01, 0x00], to: descriptor)
-        let greeting = try readExactly(2, from: descriptor)
-        guard greeting == [0x05, 0x00] else { throw ProxyHealthError.unexpectedSOCKS5Reply }
-
-        try writeAll([0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0], to: descriptor)
-        let response = try readExactly(4, from: descriptor)
-        guard response[0] == 0x05 else { throw ProxyHealthError.unexpectedSOCKS5Reply }
-        guard response[1] == 0x00 else { throw ProxyHealthError.udpAssociateRejected(response[1]) }
-        return true
-    }
-
-    private static func writeAll(_ bytes: [UInt8], to descriptor: Int32) throws {
-        var sent = 0
-        while sent < bytes.count {
-            let count = bytes.withUnsafeBytes { buffer in
-                Darwin.send(descriptor, buffer.baseAddress!.advanced(by: sent), bytes.count - sent, 0)
-            }
-            guard count > 0 else { throw ProxyHealthError.writeFailed }
-            sent += count
-        }
-    }
-
-    private static func readExactly(_ count: Int, from descriptor: Int32) throws -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: count)
-        var received = 0
-        while received < count {
-            let current = bytes.withUnsafeMutableBytes { buffer in
-                Darwin.recv(descriptor, buffer.baseAddress!.advanced(by: received), count - received, 0)
-            }
-            guard current > 0 else { throw ProxyHealthError.unexpectedSOCKS5Reply }
-            received += current
-        }
-        return bytes
+        try RustCore().call(["op":"probeUDP", "port":port])
     }
 }

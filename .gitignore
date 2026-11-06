@@ -3,3 +3,7 @@ build/
 dist/
 .DS_Store
 *.xcuserstate
+
+core/target/
+windows/**/bin/
+windows/**/obj/

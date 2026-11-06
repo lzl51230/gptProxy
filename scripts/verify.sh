@@ -10,16 +10,23 @@ PRODUCT_ZIP="$PROJECT_DIR/dist/ChatGPT-Proxy-${PRODUCT_VERSION}-Universal.zip"
 DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 export DEVELOPER_DIR
 
+"$PROJECT_DIR/scripts/build-core.sh"
+"${CARGO:-$HOME/.cargo/bin/cargo}" test --manifest-path "$PROJECT_DIR/core/Cargo.toml" --locked --target-dir "$PROJECT_DIR/build/rust"
 swift test
 "$PROJECT_DIR/scripts/package.sh"
 
 /usr/bin/plutil -lint "$PROJECT_DIR/Resources/Info.plist"
 /usr/bin/jq -e . "$PROFILE" >/dev/null
 /usr/bin/codesign --verify --deep --strict "$APP_DIR"
+# Rust must be statically linked; no developer-machine dylib paths may escape into the ZIP.
+if /usr/bin/otool -L "$APP_DIR/Contents/MacOS/ChatGPTProxyLauncher" "$APP_DIR/Contents/Resources/DNSProtectionHelper" | /usr/bin/grep -q 'libgpt_proxy_core'; then
+    print -u2 "Rust core was dynamically linked into the macOS distribution."
+    exit 1
+fi
 ARCHITECTURES=$(/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/ChatGPTProxyLauncher")
 [[ "$ARCHITECTURES" == *arm64* && "$ARCHITECTURES" == *x86_64* ]]
 HELPER="$APP_DIR/Contents/Resources/DNSProtectionHelper"
-[[ -x "$HELPER" && "$("$HELPER" --version)" == 2 ]]
+[[ -x "$HELPER" && "$("$HELPER" --version)" == 3 ]]
 /usr/bin/codesign --verify --strict "$HELPER"
 HELPER_ARCHITECTURES=$(/usr/bin/lipo -archs "$HELPER")
 [[ "$HELPER_ARCHITECTURES" == *arm64* && "$HELPER_ARCHITECTURES" == *x86_64* ]]

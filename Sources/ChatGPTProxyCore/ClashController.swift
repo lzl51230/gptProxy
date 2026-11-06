@@ -1,7 +1,5 @@
 import Foundation
 import Darwin
-import Yams
-import CryptoKit
 
 public enum MonitorError: LocalizedError {
     case message(String)
@@ -64,7 +62,7 @@ public enum MonitorHTTP {
     }
 }
 
-public struct ClashProxy: Decodable, Sendable {
+public struct ClashProxy: Codable, Sendable {
     public let name: String
     public let type: String
     public let now: String?
@@ -76,25 +74,14 @@ public struct ClashSnapshot: Sendable {
     public let mode: String
     public let proxies: [String: ClashProxy]
 
-    public var current: String? {
-        var name = "GLOBAL"
-        var visited = Set<String>()
-        while visited.insert(name).inserted, let proxy = proxies[name] {
-            if proxy.all == nil { return name }
-            guard let next = proxy.now else { return nil }
-            name = next
-        }
-        return nil
+    private struct Resolution: Decodable { let current: String?; let selection: [String:String] }
+    private var resolution: Resolution {
+        let values = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(proxies))
+        return try! RustCore().call(["op":"clashSnapshot", "proxies":values])
     }
+    public var current: String? { resolution.current }
+    public var selectionSignature: [String:String] { resolution.selection }
 
-    public var selectionSignature: [String: String] {
-        var result: [String: String] = [:]
-        var name = "GLOBAL"
-        while result[name] == nil, let next = proxies[name]?.now {
-            result[name] = next; name = next
-        }
-        return result
-    }
 }
 
 public struct ClashControllerClient: Sendable {
@@ -145,79 +132,46 @@ public struct ClashControllerClient: Sendable {
         return .init(socket: socket, mode: config["mode"] as? String ?? "", proxies: proxies.proxies)
     }
 
-    private func encoded(_ name: String) -> String {
-        // Mihomo compares connection route parameters to literal UUIDs. Escaping
-        // their hyphens returns 204 without finding or closing the connection.
-        name.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-")))!
+    private func command(socket: String, _ name: String, _ arguments: [String:String] = [:]) async throws -> Data {
+        struct Request: Decodable { let method: String; let path: String; let body: [String:String]?; let timeout: Int }
+        var request: [String:Any] = arguments; request["op"] = "clashRequest"; request["command"] = name
+        let description: Request = try RustCore().call(request)
+        return try await self.request(socket:socket,path:description.path,method:description.method,
+                                      body:try description.body.map { try JSONEncoder().encode($0) },timeout:description.timeout)
     }
-
     public func delay(socket: String, name: String) async throws -> Int {
-        let url = MonitorHTTP.testURL.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
-        let data = try await request(socket: socket, path: "/proxies/\(encoded(name))/delay?url=\(url)&timeout=10000&expected=401", timeout: 12)
         struct Result: Decodable { let delay: Int }
-        return try JSONDecoder().decode(Result.self, from: data).delay
+        return try JSONDecoder().decode(Result.self,from:await command(socket:socket,"delay",["name":name])).delay
     }
-
-    public func select(socket: String, name: String) async throws {
-        _ = try await request(socket: socket, path: "/proxies/GLOBAL", method: "PUT", body: JSONEncoder().encode(["name": name]))
+    public func select(socket: String, name: String) async throws { _ = try await command(socket:socket,"select",["name":name]) }
+    private func connectionIDs(socket: String, node: String? = nil, dns: Bool = false) async throws -> [String] {
+        let object = try JSONSerialization.jsonObject(with:await command(socket:socket,"connections")) as? [String:Any]
+        return try RustCore().call(["op":"clashConnectionIds", "connections":object?["connections"] ?? [], "node":node as Any? ?? NSNull(), "dns":dns])
     }
-
-    public func oldConnections(socket: String, node: String) async throws -> [String] {
-        struct Connection: Decodable { let id: String; let chains: [String] }
-        struct Response: Decodable { let connections: [Connection]? }
-        let data = try await request(socket: socket, path: "/connections")
-        return try JSONDecoder().decode(Response.self, from: data).connections.orEmpty
-            .filter { $0.chains.contains("GLOBAL") && $0.chains.contains(node) }.map(\.id)
+    public func oldConnections(socket: String, node: String) async throws -> [String] { try await connectionIDs(socket:socket,node:node) }
+    public func close(socket: String, id: String) async throws { _ = try await command(socket:socket,"close",["id":id]) }
+    public func reload(socket: String, yaml: String) async throws { _ = try await command(socket:socket,"reload",["yaml":yaml]) }
+    public func selection(socket: String) async throws -> [String:String] {
+        let object = try JSONSerialization.jsonObject(with:await command(socket:socket,"proxies")) as? [String:Any]
+        return try RustCore().call(["op":"clashSelections", "proxies":object?["proxies"] ?? [:]])
     }
-
-    public func close(socket: String, id: String) async throws {
-        _ = try await request(socket: socket, path: "/connections/" + encoded(id), method: "DELETE")
-    }
-
-    public func reload(socket: String, yaml: String) async throws {
-        _ = try await request(socket: socket, path: "/configs?force=false", method: "PUT",
-                              body: JSONEncoder().encode(["payload": yaml]), timeout: 10)
-    }
-
-    public func selection(socket: String) async throws -> [String: String] {
-        struct Response: Decodable { let proxies: [String: ClashProxy] }
-        let proxies = try JSONDecoder().decode(Response.self, from: await request(socket: socket, path: "/proxies")).proxies
-        return proxies.reduce(into: [:]) { result, item in
-            if item.value.type.caseInsensitiveCompare("Selector") == .orderedSame,
-               let now = item.value.now { result[item.key] = now }
+    public func restoreSelection(socket: String, selection: [String:String]) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(12))
+        while true {
+            let object = try JSONSerialization.jsonObject(with: await command(socket:socket,"proxies")) as? [String:Any]
+            let ready: Bool = try RustCore().call(["op":"clashSelectionsReady", "selection":selection, "proxies":object?["proxies"] ?? [:]])
+            if ready { break }
+            guard ContinuousClock.now < deadline else { throw MonitorError.message("Clash 订阅节点尚未加载，无法恢复原节点选择") }
+            try await Task.sleep(for: .milliseconds(200))
         }
+        for (group,name) in selection.sorted(by: {$0.key < $1.key}) { _ = try await command(socket:socket,"select",["group":group,"name":name]) }
     }
-
-    public func restoreSelection(socket: String, selection: [String: String]) async throws {
-        for (group, name) in selection.sorted(by: { $0.key < $1.key }) {
-            _ = try await request(socket: socket, path: "/proxies/\(encoded(group))", method: "PUT",
-                                  body: JSONEncoder().encode(["name": name]))
-        }
-    }
-
-    public func flushDNS(socket: String) async throws {
-        _ = try await request(socket: socket, path: "/cache/dns/flush", method: "POST")
-    }
-
-    public func closeAllConnections(socket: String) async throws {
-        _ = try await request(socket: socket, path: "/connections", method: "DELETE")
-    }
-
+    public func flushDNS(socket: String) async throws { _ = try await command(socket:socket,"flushDNS") }
+    public func closeAllConnections(socket: String) async throws { _ = try await command(socket:socket,"closeAll") }
     public func closeDNSConnections(socket: String) async throws {
-        struct Metadata: Decodable { let destinationIP: String?; let destinationPort: String? }
-        struct Connection: Decodable { let id: String; let chains: [String]; let metadata: Metadata }
-        struct Response: Decodable { let connections: [Connection]? }
-        let result = try JSONDecoder().decode(Response.self, from: await request(socket: socket, path: "/connections"))
-        for connection in result.connections ?? [] where connection.chains.contains("GLOBAL")
-            && ["1.1.1.1", "8.8.8.8"].contains(connection.metadata.destinationIP ?? "")
-            && connection.metadata.destinationPort == "443" {
-            try await close(socket: socket, id: connection.id)
-        }
+        for id in try await connectionIDs(socket:socket,dns:true) { try await close(socket:socket,id:id) }
     }
-}
 
-private extension Optional where Wrapped: RangeReplaceableCollection {
-    var orEmpty: Wrapped { self ?? Wrapped() }
 }
 
 public struct NodeOriginResolver: Sendable {
@@ -225,51 +179,10 @@ public struct NodeOriginResolver: Sendable {
     public let signature: Data
 
     public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/mihomo-party")) throws {
-        var configuration = Data()
-        func load(_ url: URL) throws -> [String: Any] {
-            let data = try Data(contentsOf: url)
-            configuration.append(data)
-            var yaml = String(decoding: data, as: UTF8.self)
-            // Foundation file reads strip a UTF-8 BOM; String(decoding:) preserves it.
-            // Normalize it before Yams, which can misparse BOM-prefixed documents.
-            if yaml.first == "\u{FEFF}" { yaml.removeFirst() }
-            do { return try Yams.load(yaml: yaml) as? [String: Any] ?? [:] }
-            catch let error as YamlError {
-                let reason: String
-                switch error {
-                case let .reader(problem, _, _, _): reason = problem
-                case let .scanner(_, problem, mark, _), let .parser(_, problem, mark, _), let .composer(_, problem, mark, _): reason = "\(problem) at \(mark.line):\(mark.column)"
-                default: reason = "YAML 结构不受支持"
-                }
-                throw MonitorError.message("配置解析失败（\(url.lastPathComponent)）：\(reason)")
-            }
-        }
-        func identity(_ node: [String: Any]) throws -> Data {
-            try JSONSerialization.data(withJSONObject: node.filter { $0.key != "name" }, options: [.sortedKeys])
-        }
-        let profiles = try load(directory.appendingPathComponent("profile.yaml"))["items"] as? [[String: Any]] ?? []
-        var byName: [String: Set<String>] = [:]
-        var byIdentity: [Data: Set<String>] = [:]
-        for profile in profiles {
-            guard let id = profile["id"] as? String,
-                  id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { continue }
-            let nodes = try load(directory.appendingPathComponent("profiles/\(id).yaml"))["proxies"] as? [[String: Any]] ?? []
-            for node in nodes {
-                if let name = node["name"] as? String { byName[name, default: []].insert(id) }
-                byIdentity[try identity(node), default: []].insert(id)
-            }
-        }
-        var result: [String: String] = [:]
-        for (name, ids) in byName where ids.count == 1 { result[name] = ids.first! }
-        let runtime = try load(directory.appendingPathComponent("work/config.yaml"))["proxies"] as? [[String: Any]] ?? []
-        for node in runtime {
-            guard let name = node["name"] as? String else { continue }
-            let ids = byIdentity[try identity(node)] ?? []
-            // Runtime identity takes precedence over a potentially misleading name.
-            result[name] = ids.count == 1 ? ids.first : nil
-        }
-        origins = result
-        signature = Data(SHA256.hash(data: configuration))
+        struct Result: Decodable { let origins: [String:String]; let signature: [UInt8] }
+        let result: Result = try RustCore().call(["op":"nodeOrigins", "directory":directory.path])
+        origins = result.origins
+        signature = Data(result.signature)
     }
 
     init(origins: [String: String]) {
@@ -278,39 +191,13 @@ public struct NodeOriginResolver: Sendable {
     }
 
     public static func region(_ name: String) -> String? {
-        let aliases: [(String, [String])] = [
-            ("TW", ["台湾", "台灣", "taiwan"]), ("HK", ["香港", "hong kong", "hongkong"]),
-            ("MO", ["澳门", "澳門", "macau", "macao"]), ("JP", ["日本", "japan"]),
-            ("SG", ["新加坡", "singapore"]), ("US", ["美国", "美國", "united states", "usa"]),
-            ("GB", ["英国", "英國", "united kingdom", "britain"]), ("KR", ["韩国", "韓國", "korea"]),
-            ("DE", ["德国", "德國", "germany"]), ("FR", ["法国", "法國", "france"]),
-            ("CA", ["加拿大", "canada"]), ("AU", ["澳大利亚", "澳洲", "australia"]),
-            ("CN", ["中国", "中國", "china"]), ("IN", ["印度", "india"]),
-            ("NL", ["荷兰", "荷蘭", "netherlands"]), ("RU", ["俄罗斯", "俄羅斯", "russia"]),
-        ]
-        let lower = name.lowercased()
-        let matches = aliases.filter { $0.1.contains(where: { lower.contains($0) }) }.map(\.0)
-        if matches.count == 1 { return matches[0] }
-        if matches.count > 1 { return nil }
-        var flags = Set<String>()
-        for char in name {
-            let scalars = Array(char.unicodeScalars)
-            if scalars.count == 2 && scalars.allSatisfy({ (0x1F1E6...0x1F1FF).contains($0.value) }) {
-                flags.insert(String(String.UnicodeScalarView(scalars.map { UnicodeScalar($0.value - 0x1F1E6 + 65)! })))
-            }
-        }
-        return flags.count == 1 ? flags.first : nil
+        try! RustCore().nullable(["op": "region", "name": name])
     }
 }
 
 public enum AutoSwitchPolicy {
     public static let threshold = 800
     public static func winner(_ delays: [String: Int], current: String) -> String? {
-        delays.filter { (1...threshold).contains($0.value) }.sorted {
-            if $0.value != $1.value { return $0.value < $1.value }
-            if $0.key == current { return true }
-            if $1.key == current { return false }
-            return $0.key < $1.key
-        }.first?.key
+        try! RustCore().nullable(["op": "winner", "delays": delays, "current": current])
     }
 }

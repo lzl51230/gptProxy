@@ -1,0 +1,13 @@
+{
+  "macos": {
+    "version": "4.1.1",
+    "url": "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.1.1_MacOS/ProxyBridge-v4.1.1-Universal-Installer.pkg",
+    "sha256": "7ffebe7ada4226567dcd4f7c8e7009d2ad0ef2afa4bc7a8525e2a9ddc0dd8c68",
+    "teamIdentifier": "L4HJT32Z59"
+  },
+  "windows": {
+    "version": "4.1.1",
+    "url": "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.1.1/ProxyBridge-Setup-4.1.1.exe",
+    "sha256": "754f45fb31f3953b9b81005090f9a479f89827adb628cf2c76bc4139f673a152"
+  }
+}

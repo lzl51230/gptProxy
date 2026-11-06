@@ -3,7 +3,7 @@ import Darwin
 @testable import ChatGPTProxyCore
 
 final class ClashDNSClientTests: XCTestCase, @unchecked Sendable {
-    func testRuntimeReloadUsesPayloadAndOnlyRestoresManualSelectors() async throws {
+    func testRuntimeReloadWaitsForProviderNodesAndOnlyRestoresManualSelectors() async throws {
         let fixture = try ControllerFixture()
         defer { fixture.stop() }
         let client = ClashControllerClient()
@@ -61,21 +61,25 @@ private final class ControllerFixture {
         try? FileManager.default.removeItem(at: log)
     }
     static let script = #"""
-import socketserver, http.server, json, sys
+import socketserver, http.server, json, sys, time
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
   payload={'proxies':{'GLOBAL':{'name':'GLOBAL','type':'Selector','now':'auto','all':['auto']},'auto':{'name':'auto','type':'URLTest','now':'node','all':['node']},'node':{'name':'node','type':'VLESS'}}}
+  if self.path=='/proxies' and time.monotonic()<self.server.ready_at: payload={'proxies':{'GLOBAL':{'name':'GLOBAL','type':'Selector','now':'DIRECT','all':['DIRECT']},'DIRECT':{'type':'Direct'}}}
   if self.path=='/connections': payload={'connections':[{'id':'fbe648de-7980-46be-92c5-b1af6dbc9e4a','chains':['node','GLOBAL'],'metadata':{'destinationIP':'1.1.1.1','destinationPort':'443'}},{'id':'keep','chains':['GLOBAL'],'metadata':{'destinationIP':'9.9.9.9','destinationPort':'443'}}]}
   b=json.dumps(payload).encode(); self.send_response(200); self.send_header('Content-Length',str(len(b))); self.end_headers(); self.wfile.write(b)
  def change(self):
   n=int(self.headers.get('Content-Length',0)); body=json.loads(self.rfile.read(n)) if n else {}
   with open(sys.argv[2],'a') as f: f.write(json.dumps({'path':self.path,'body':body})+'\n')
-  self.send_response(400 if body.get('payload')=='reject' else 204); self.send_header('Content-Length','0'); self.end_headers()
+  rejected=body.get('payload')=='reject' or (self.path=='/proxies/GLOBAL' and time.monotonic()<self.server.ready_at)
+  if self.path=='/configs?force=false' and not rejected: self.server.ready_at=time.monotonic()+0.4
+  self.send_response(400 if rejected else 204); self.send_header('Content-Length','0'); self.end_headers()
  do_PUT=change
  do_POST=change
  do_DELETE=change
 server=socketserver.UnixStreamServer(sys.argv[1],Handler)
+server.ready_at=0
 print('R',flush=True)
 server.serve_forever()
 """#

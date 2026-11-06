@@ -38,6 +38,7 @@ def main():
         parser.error('--seconds must be positive')
     root = Path(__file__).resolve().parent.parent
     env = dict(os.environ, DEVELOPER_DIR=os.environ.get('DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer'))
+    subprocess.run([str(root / 'scripts/build-core.sh')], cwd=root, env=env, check=True)
     subprocess.run(['swift', 'build'], cwd=root, env=env, check=True)
     build = Path(subprocess.check_output(['swift', 'build', '--show-bin-path'], cwd=root, env=env, text=True).strip())
     objects = [p for p in (build / 'ChatGPTProxyApp.product/Objects.LinkFileList').read_text().splitlines()
@@ -54,10 +55,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='gptproxy-memory-build-') as temporary:
         executable = Path(temporary) / 'probe'
         command = ['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '6',
-                   '-I', str(build / 'Modules'), '-Xcc', '-fmodule-map-file=' + str(build / 'CCodexTransport.build/module.modulemap'),
-                   '-Xcc', '-I' + str(root / 'Sources/CCodexTransport/include'),
-                   '-Xcc', '-fmodule-map-file=' + str(root / '.build/checkouts/Yams/Sources/CYaml/include/module.modulemap'),
-                   '-lcurl', str(root / 'scripts/CLIMemoryProbe.swift'), *objects, '-o', str(executable)]
+                   '-I', str(build / 'Modules'), '-Xcc', '-fmodule-map-file=' + str(build / 'CRustProxy.build/module.modulemap'),
+                   '-Xcc', '-I' + str(root / 'Sources/CRustProxy/include'),
+                   str(root / 'build/rust' / subprocess.check_output([str(Path.home()/'.cargo/bin/rustc'), '-vV'], cwd=root, text=True).split('host: ')[1].splitlines()[0] / 'release/libgpt_proxy_core.a'),
+                   '-framework', 'Security', '-framework', 'CoreFoundation',
+                   str(root / 'scripts/CLIMemoryProbe.swift'), *objects, '-o', str(executable)]
         subprocess.run(command, cwd=root, env=env, check=True)
         process = subprocess.Popen([str(executable), str(output), str(root / 'Resources/ChatGPT-Only.pbprofile'), str(args.seconds)],
                                    env=env, start_new_session=True)
