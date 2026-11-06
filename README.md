@@ -20,7 +20,7 @@
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.2-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.3-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 
@@ -87,3 +87,15 @@ PF 状态清理目前限定已审核的 Darwin 23–25（macOS 14、15、26）AB
 设置中的“外观 → 颜色主题”支持跟随系统（默认），以及参考 [VS Code 内置主题](https://github.com/microsoft/vscode/tree/main/extensions) 的 Dark Modern、Light Modern、Monokai 和 Solarized Dark 配色。主题立即应用到主窗口、设置窗口和首次配置面板，并自动保存；选择“跟随系统”可恢复 macOS 外观。
 
 ProxyBridge 活动日志位于 `~/Library/Logs/ChatGPT Proxy/proxybridge.log`，达到 5 MB 轮转。主窗口可查看日志、取消下载或启用；修复入口通过命令行安装器及 macOS 原生管理员认证完成。
+
+2.3.3 将 CLI 日志读取、解析和写盘放在串行后台队列，主线程只接收合并后的状态。每个输出流的单行缓冲限制为 64 KiB；主线程繁忙或磁盘较慢时，不再为每块日志创建携带原始数据的任务。运行中收到 CLI 错误会撤销就绪状态。
+
+隔离内存压力测试使用模拟 CLI，每轮通过 stdout/stderr 输出 64 MiB 日志并重启子进程，记录主线程暂停期间的堆内存、RSS、文件描述符及进程清理结果，不更改代理或 DNS：
+
+```sh
+python3 scripts/qa-cli-memory.py --seconds 1800 --output dist/memory-soak
+```
+
+输出目录须不存在；结果写入 `summary.json` 和 `samples.jsonl`。短时间冒烟可使用 `--seconds 20`。
+
+2.3.3 的复现、30 分钟压力测试和本机更新结果见[内存修复验证记录](docs/validation-memory-2026-11-06.md)。

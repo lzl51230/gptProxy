@@ -111,4 +111,44 @@ final class ProxyBridgeCLIControllerTests: XCTestCase {
             XCTAssertNil(controller.processIdentifier)
         }
     }
+
+    func testLateFailureWithdrawsReadinessAndNextGenerationStartsCleanly() async throws {
+        let (script, data) = try fixture("""
+        trap 'exit 0' TERM INT
+        printf 'ProxyBridge CLI 4.1.1\\nProfile "ChatGPT Only": 1 proxies, 3 rules applied\\nDNS proxy: off (host name rules and send hostname do not work)\\nRedirecting traffic. Press Ctrl+C to stop.\\n'
+        sleep 0.2
+        echo 'ERROR: late failure' >&2
+        while :; do sleep 0.1; done
+        """)
+        defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+        let controller = ProxyBridgeCLIController(executableURL: script, timeout: 2,
+            logURL: script.deletingLastPathComponent().appendingPathComponent("log"))
+        for _ in 0..<3 {
+            try await controller.ensureRunning(profileData: data)
+            XCTAssertTrue(controller.isReady)
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(controller.state, .failed("ERROR: late failure"))
+            XCTAssertFalse(controller.isReady)
+            await controller.stopAndWait()
+            XCTAssertEqual(controller.state, .stopped)
+        }
+    }
+
+    func testCancellationDuringContinuousOutputReleasesChild() async throws {
+        let (script, data) = try fixture("""
+        exec /usr/bin/awk 'BEGIN { while (1) print "waiting for your approval"; }'
+        """)
+        defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+        let controller = ProxyBridgeCLIController(executableURL: script, timeout: 5,
+            logURL: script.deletingLastPathComponent().appendingPathComponent("log"))
+        let startup = Task { try await controller.ensureRunning(profileData: data) }
+        try await Task.sleep(for: .milliseconds(100))
+        let pid = controller.processIdentifier
+        await controller.stopAndWait()
+        _ = try? await startup.value
+        XCTAssertEqual(controller.state, .stopped)
+        XCTAssertNil(controller.processIdentifier)
+        if let pid { XCTAssertEqual(kill(pid, 0), -1) }
+        else { XCTFail("Fixture must have started before cancellation") }
+    }
 }

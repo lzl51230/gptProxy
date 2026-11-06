@@ -6,7 +6,7 @@ public enum ProxyBridgeCLIState: Equatable, Sendable {
     case stopped, starting, waitingForApproval, running, failed(String)
 }
 
-public struct ProxyBridgeCLIOutput: Sendable {
+public struct ProxyBridgeCLIOutput: Sendable, Equatable {
     public private(set) var versionMatches = false
     public private(set) var profileApplied = false
     public private(set) var redirecting = false
@@ -41,7 +41,7 @@ public final class ProxyBridgeCLIController: ObservableObject {
     private var pipes: [Pipe] = []
     private var generation = UUID()
     private var output = ProxyBridgeCLIOutput()
-    private var buffers: [Int: Data] = [:]
+    private var reader: CLIOutputReader?
     private var loadedProfile: Data?
     private var startup: Task<Void, Error>?
     public var processIdentifier: pid_t? { process?.isRunning == true ? process?.processIdentifier : nil }
@@ -82,12 +82,10 @@ public final class ProxyBridgeCLIController: ObservableObject {
         let input = Pipe(), stdout = Pipe(), stderr = Pipe()
         pipes = [input, stdout, stderr]
         child.standardInput = input; child.standardOutput = stdout; child.standardError = stderr
-        for (index, pipe) in [stdout, stderr].enumerated() {
-            pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                let bytes = handle.availableData
-                if bytes.isEmpty { handle.readabilityHandler = nil }
-                Task { @MainActor [weak self] in self?.receive(bytes, stream: index, generation: id) }
-            }
+        reader = try CLIOutputReader(handles: [stdout, stderr].map(\.fileHandleForReading), logURL: logURL) { [weak self] value in
+            guard let self, self.generation == id else { return }
+            self.output = value
+            if self.state == .running, let failure = value.failure { self.state = .failed(failure) }
         }
         child.terminationHandler = { [weak self] child in
             let status = child.terminationStatus
@@ -116,38 +114,6 @@ public final class ProxyBridgeCLIController: ObservableObject {
         throw CLIError.message("ProxyBridge CLI 启动超时，请检查网络扩展授权。")
     }
 
-    private func receive(_ data: Data, stream: Int, generation id: UUID) {
-        guard generation == id else { return }
-        buffers[stream, default: Data()].append(data)
-        while let end = buffers[stream]?.firstIndex(of: 10) {
-            let line = String(decoding: buffers[stream]![..<end], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            buffers[stream]!.removeSubrange(...end)
-            output.consume(line)
-            writeLog(line)
-        }
-        if buffers[stream, default: Data()].count > 65_536 {
-            output.failureFromOversizedLine()
-            buffers[stream] = Data()
-        }
-    }
-
-    private func writeLog(_ line: String) {
-        do {
-            let fm = FileManager.default
-            try fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if let size = try? fm.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber, size.intValue >= 5_000_000 {
-                let backup = logURL.appendingPathExtension("1")
-                try? fm.removeItem(at: backup)
-                try fm.moveItem(at: logURL, to: backup)
-            }
-            if !fm.fileExists(atPath: logURL.path) { fm.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
-            let handle = try FileHandle(forWritingTo: logURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data((line + "\n").utf8))
-        } catch { /* Diagnostic logging must not affect routing. */ }
-    }
-
     public func stopAndWait() async {
         let pending = startup
         pending?.cancel()
@@ -174,18 +140,17 @@ public final class ProxyBridgeCLIController: ObservableObject {
         }
         process?.terminationHandler = nil
         process = nil
+        await reader?.stopAndWait()
+        reader = nil
         for pipe in pipes {
             pipe.fileHandleForReading.readabilityHandler = nil
             try? pipe.fileHandleForReading.close()
             try? pipe.fileHandleForWriting.close()
         }
-        pipes = []; buffers = [:]; loadedProfile = nil
+        pipes = []; loadedProfile = nil
     }
 }
 
-private extension ProxyBridgeCLIOutput {
-    mutating func failureFromOversizedLine() { consume("ERROR: CLI 输出行过长。") }
-}
 private enum CLIError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case let .message(text) = self { text } else { nil } }
