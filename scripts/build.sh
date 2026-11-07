@@ -19,18 +19,10 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 GPTPROXY_RUST_TARGET=aarch64-apple-darwin swift build -c release --arch arm64 --scratch-path "$BUILD_DIR/arm64"
 GPTPROXY_RUST_TARGET=x86_64-apple-darwin swift build -c release --arch x86_64 --scratch-path "$BUILD_DIR/x86_64"
 
-ARM_BINARY=$(find "$BUILD_DIR/arm64" -type f -path '*/release/ChatGPTProxyApp' -perm +111 -print -quit)
-INTEL_BINARY=$(find "$BUILD_DIR/x86_64" -type f -path '*/release/ChatGPTProxyApp' -perm +111 -print -quit)
-if [[ -z "$ARM_BINARY" || -z "$INTEL_BINARY" ]]; then
-    print -u2 "Could not locate both release binaries."
-    exit 1
-fi
-
-/usr/bin/lipo -create "$ARM_BINARY" "$INTEL_BINARY" -output "$MACOS_DIR/ChatGPTProxyLauncher"
-ARM_HELPER=$(find "$BUILD_DIR/arm64" -type f -path '*/release/DNSProtectionHelper' -perm +111 -print -quit)
-INTEL_HELPER=$(find "$BUILD_DIR/x86_64" -type f -path '*/release/DNSProtectionHelper' -perm +111 -print -quit)
-[[ -n "$ARM_HELPER" && -n "$INTEL_HELPER" ]]
-/usr/bin/lipo -create "$ARM_HELPER" "$INTEL_HELPER" -output "$RESOURCES_DIR/DNSProtectionHelper"
+ARM_PRODUCTS=$(swift build -c release --arch arm64 --scratch-path "$BUILD_DIR/arm64" --show-bin-path)
+INTEL_PRODUCTS=$(swift build -c release --arch x86_64 --scratch-path "$BUILD_DIR/x86_64" --show-bin-path)
+/usr/bin/lipo -create "$ARM_PRODUCTS/ChatGPTProxyApp" "$INTEL_PRODUCTS/ChatGPTProxyApp" -output "$MACOS_DIR/ChatGPTProxyLauncher"
+/usr/bin/lipo -create "$ARM_PRODUCTS/DNSProtectionHelper" "$INTEL_PRODUCTS/DNSProtectionHelper" -output "$RESOURCES_DIR/DNSProtectionHelper"
 /bin/chmod 755 "$RESOURCES_DIR/DNSProtectionHelper"
 /usr/bin/codesign --force --sign - "$RESOURCES_DIR/DNSProtectionHelper"
 /bin/chmod 755 "$MACOS_DIR/ChatGPTProxyLauncher"
