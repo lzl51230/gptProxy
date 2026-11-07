@@ -44,7 +44,9 @@ make verify
 
 要求官方 ProxyBridge 4.1.1，内置配置关闭其 DNS 扩展，避免它接管并终止 TCP DNS 连接。TCP/UDP 流量规则保留；域名解析由本项目和 Clash 负责。4.1.0 用户需通过“修复”升级。
 
-仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。普通系统解析经 `127.0.0.1/::1:53` 转入 Clash 的 `127.0.0.1:17853`，再通过当前 `GLOBAL` 节点请求 Cloudflare 和 Google DoH。GPT 通过 SOCKS5 提交的域名也使用该配置。临时采用 `redir-host` 返回真实地址，不改订阅文件。节点自身的 `default-nameserver` 与 `proxy-server-nameserver` 必须使用独立加密解析；引导服务器必须是 IPv4 地址，不接受 IPv6 字面地址，避免解析依赖尚未建立的代理。
+仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。普通系统解析经 `127.0.0.1/::1:53` 转入 Clash 的 `127.0.0.1:17853`，再通过当前 `GLOBAL` 节点请求 Cloudflare 和 Google DoH。GPT 通过 SOCKS5 提交的域名也使用该配置。临时采用 `redir-host` 返回真实地址。
+
+主窗口的「Clash DNS」会在启动前检查引导和节点解析配置。两组 DNS 都须独立使用 DoH 或 DoT，引导服务器须使用 IPv4 字面地址。如果显示「正在使用明文 DNS」，点击右侧「修复」。启动器会记住选择，优先使用 Clash Party 已保存的合格加密解析地址，缺少时使用内置 IPv4 DoH。点击「启动 ChatGPT」或「启用 DNS / IPv4 保护」后才应用临时配置，关闭保护时恢复。订阅文件和 Clash Party 的「DNS 覆写」开关保持原值。
 
 保护期间，当前共用 Clash 实例的顶层 `ipv6` 和 `dns.ipv6` 均临时关闭，普通节点及 provider 覆盖使用 `ip-version: ipv4`。同时使用该实例的其他应用也受影响，启用时会断开现有 Clash 连接一次，让它们按新策略重建。IPv4 解析和 AAAA 空响应检查通过，并完成所需 GPT 重启后，窗口才显示保护成功。节点无可用 IPv4 或启用失败时恢复原设置，不回退 IPv6 或直连。
 

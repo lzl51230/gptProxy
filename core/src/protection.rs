@@ -164,8 +164,9 @@ impl Protection {
                 let original = crate::config::dispatch(
                     &json!({"op":"runtimeYAML","source":value["source"],"general":value["general"]}),
                 )?;
-                self.protected =
-                    crate::config::dispatch(&json!({"op":"protectedYAML","source":original}))?;
+                self.protected = crate::config::dispatch(&json!({
+                    "op":"protectedYAML", "source":original, "bootstrapRepair":value["bootstrapRepair"]
+                }))?;
                 let ipv6 = crate::config::dispatch(
                     &json!({"op":"runtimeIPv6","general":value["general"]}),
                 )?;
@@ -260,6 +261,32 @@ fn now(r: &Value) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bootstrap_repair_is_applied_only_to_the_temporary_configuration() {
+        let mut p = Protection::default();
+        let plain = "mode: global\nipv6: true\ndns:\n  default-nameserver: [223.5.5.5]\n  proxy-server-nameserver: [223.5.5.5]";
+        let inspection = crate::config::dispatch(&json!({"op":"bootstrapRepair","source":plain,"saved":"dns: {default-nameserver: [system]}"})).unwrap();
+        p.completed("preflight", &json!({
+            "source":plain, "general":"ipv6: true", "snapshot":{"mode":"global","current":"node"},
+            "services":[{"id":"wifi"}], "bootstrapRepair":inspection["replacements"]
+        })).unwrap();
+        let parse_dns = |value: &Value| -> Value {
+            serde_yaml_ng::from_str::<Value>(value.as_str().unwrap()).unwrap()["dns"].clone()
+        };
+        for key in ["default-nameserver", "proxy-server-nameserver"] {
+            assert_eq!(parse_dns(&p.protected)[key], json!(["https://223.5.5.5/dns-query", "https://1.1.1.1/dns-query"]));
+        }
+        let mut recovered = Protection::default();
+        recovered.dispatch(&json!({"action":"load","journal":p.journal})).unwrap();
+        for changed in [false, true] {
+            let updated = plain.replace("223.5.5.5", "119.29.29.29");
+            recovered.completed("clashRestorePrepare", &json!({
+                "sourceChanged":changed, "source":updated, "general":"ipv6: false"
+            })).unwrap();
+            let expected = if changed { updated.as_str() } else { plain };
+            assert_eq!(parse_dns(&recovered.restore_yaml), parse_dns(&json!(expected)));
+        }
+    }
     #[test]
     fn interrupted_reload_restores_saved_selection_but_enabled_sessions_preserve_user_choice() {
         for applied in [false, true] {

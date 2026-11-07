@@ -49,8 +49,15 @@ public enum DNSProtectionConfiguration {
         return "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec)"
     }
 
-    public static func protectedYAML(_ source: String) throws -> String {
-        try RustCore().call(["op":"protectedYAML", "source":source])
+    public struct BootstrapInspection: Decodable, Sendable {
+        public let replacements: [String: [String]]
+        public let plaintext: Bool
+    }
+    public static func inspectBootstrap(_ source: String, saved: String?) throws -> BootstrapInspection {
+        try RustCore().call(["op": "bootstrapRepair", "source": source, "saved": saved ?? ""])
+    }
+    public static func protectedYAML(_ source: String, bootstrapRepair: [String: [String]] = [:]) throws -> String {
+        try RustCore().call(["op":"protectedYAML", "source":source, "bootstrapRepair":bootstrapRepair])
     }
     static func isEncryptedResolver(_ value: String, requiresIP: Bool) -> Bool {
         try! RustCore().call(["op":"encryptedResolver", "value":value, "requiresIP":requiresIP])
@@ -87,6 +94,7 @@ public struct DNSProtectionRequest: Codable, Sendable {
     public var socket: String?
     public var yaml: String?
     public var sourceGeneration: String?
+    public var bootstrapRepair: [String: [String]]?
     public init(command: Command, port: UInt16? = nil, socket: String? = nil, yaml: String? = nil, sourceGeneration: String? = nil) {
         self.command = command; self.port = port; self.socket = socket; self.yaml = yaml
         self.sourceGeneration = sourceGeneration

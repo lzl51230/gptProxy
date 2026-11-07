@@ -95,6 +95,14 @@ struct ContentView: View {
                 detail: proxyDetail,
                 issue: .localProxy(port: model.proxyPort)
             )
+            statusRow(
+                "Clash DNS",
+                ready: model.dns.clashCheck.isReady,
+                detail: model.dns.clashCheck == .prepared && model.protectionReady
+                    ? "保护期间已应用加密 DNS" : model.dns.clashCheck.detail,
+                issue: .clashDNS(model.dns.clashCheck),
+                repair: model.dns.clashCheck.canRepair ? { Task { await model.repairClashDNS() } } : nil
+            )
             GridRow {
                 Image(systemName: model.protectionReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
                     .foregroundStyle(model.protectionReady ? .green : .orange)
@@ -184,6 +192,7 @@ struct ContentView: View {
             Text(detail)
                 .foregroundStyle(theme.secondary)
                 .lineLimit(1)
+                .help(detail)
             if let repair {
                 Button("修复", action: repair).disabled(model.isBusy)
             }
@@ -196,6 +205,8 @@ struct ContentView: View {
             model.openChatGPTDownload()
         case .installProxyBridge:
             model.repairProxyBridge()
+        case .repairClashDNS:
+            Task { await model.repairClashDNS() }
         case .openNetworkExtensionSettings:
             model.openNetworkExtensionSettings()
         case .installProfile:

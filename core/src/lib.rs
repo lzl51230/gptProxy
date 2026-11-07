@@ -249,7 +249,7 @@ pub unsafe extern "C" fn cgp_core_call(
                 }
                 Ok(Value::Null)
             }
-            "protectedYAML" | "runtimeYAML" | "runtimeIPv6" | "restoredYAML"
+            "protectedYAML" | "bootstrapRepair" | "runtimeYAML" | "runtimeIPv6" | "restoredYAML"
             | "encryptedResolver" => config::dispatch(&request),
             _ => policy::dispatch(&request),
         }

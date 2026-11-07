@@ -11,6 +11,8 @@ final class AppModel: ObservableObject {
         case ready
         case launching
         case configuringProfile
+        case preparingClashDNS
+        case clashDNSReady
         case repairing(String)
         case failed(String)
 
@@ -26,6 +28,10 @@ final class AppModel: ObservableObject {
                 "正在启动 ChatGPT..."
             case .configuringProfile:
                 "正在配置 ProxyBridge..."
+            case .clashDNSReady:
+                "Clash DNS 已就绪"
+            case .preparingClashDNS:
+                "正在验证保护期间的加密 DNS 配置…"
             case let .repairing(message): message
             case let .failed(message):
                 message
@@ -38,6 +44,7 @@ final class AppModel: ObservableObject {
     let repairService = ProxyBridgeRepairService()
     let dns = DNSProtectionController()
     private var dnsObservation: AnyCancellable?
+    private var clashDNSObservation: AnyCancellable?
     private var repairObservation: AnyCancellable?
     private var cliObservation: AnyCancellable?
 
@@ -46,6 +53,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard proxyPort != oldValue else { return }
             guard activeOperation == nil else { return }
+            dns.resetClashCheck()
             Task { try? await dns.restore() }
             if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
             phase = .idle
@@ -84,6 +92,7 @@ final class AppModel: ObservableObject {
         self.refreshAfterProfileConfiguration = refreshAfterProfileConfiguration
         let stored = defaults.integer(forKey: "proxyPort")
         proxyPort = stored > 0 ? stored : Int(ProxyConfiguration.defaultProxyPort)
+        clashDNSObservation = dns.$clashCheck.sink { [weak self] _ in self?.objectWillChange.send() }
         dnsObservation = dns.$status.sink { [weak self] value in
             guard let self else { return }
             self.objectWillChange.send()
@@ -138,6 +147,7 @@ final class AppModel: ObservableObject {
         guard let operation = beginOperation(phase: .checking) else { return }
         defer { endOperation(operation) }
         await dns.refresh()
+        _ = try? await dns.checkClash(port: proxyPort)
 
         updateInstalledApps()
         extensionEnabled = await SystemExtensionChecker.proxyBridgeIsEnabled()
@@ -161,6 +171,8 @@ final class AppModel: ObservableObject {
                 phase = .failed("ProxyBridge 网络扩展尚未启用。")
             } else if !proxyBridgeProfileReady {
                 phase = .failed("代理尚未运行，请启用代理。")
+            } else if !dns.clashCheck.isReady {
+                phase = .failed(dns.clashCheck.detail)
             } else if !dns.status.isEnabled {
                 phase = .failed(dns.status.detail)
             } else {
@@ -203,7 +215,7 @@ final class AppModel: ObservableObject {
     }
 
     var canCancelOperation: Bool {
-        !repairService.isBusy || repairService.canCancel
+        phase != .preparingClashDNS && (!repairService.isBusy || repairService.canCancel)
     }
     func cancelProxyStartup() async {
         operationCancelled = true
@@ -227,6 +239,7 @@ final class AppModel: ObservableObject {
         guard let operation = beginOperation(phase: .configuringProfile) else { return }
         defer { endOperation(operation) }
         do {
+            _ = try await dns.requireClashDNS(port: proxyPort)
             try await configureBundledProxyBridgeProfile()
             try checkOperationCancellation()
             try await activateProtection(launchGPT: false)
@@ -287,6 +300,15 @@ final class AppModel: ObservableObject {
                 phase = .failed(error.localizedDescription)
             }
         }
+    }
+
+    func repairClashDNS() async {
+        guard let operation = beginOperation(phase: .preparingClashDNS) else { return }
+        defer { endOperation(operation) }
+        do {
+            _ = try await dns.checkClash(port: proxyPort, prepareRepair: true)
+            phase = .clashDNSReady
+        } catch { phase = .failed(error.localizedDescription) }
     }
 
     func revealBundledProfile() {
@@ -388,7 +410,7 @@ final class AppModel: ObservableObject {
             throw AppError.chatGPTMissing
         }
         guard proxyBridgeInstalled else { throw AppError.launchStepFailed("ProxyBridge 需要修复", proxyBridgeStatus.detail) }
-
+        _ = try await dns.requireClashDNS(port: Int(port))
 
         let health = try await ProxyHealthChecker.check(port: port)
         proxyReachable = true

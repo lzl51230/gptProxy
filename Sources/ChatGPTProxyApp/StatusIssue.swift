@@ -3,6 +3,7 @@ import Foundation
 enum RemediationAction: Equatable {
     case downloadChatGPT
     case installProxyBridge
+    case repairClashDNS
     case openNetworkExtensionSettings
     case installProfile
     case revealProfile
@@ -12,6 +13,7 @@ enum RemediationAction: Equatable {
 enum StatusIssue: Identifiable, Equatable {
     case chatGPT(requiresUpdate: Bool)
     case proxyBridge
+    case clashDNS(ClashDNSCheck)
     case networkExtension
     case dedicatedProfile(manualFallback: Bool)
     case localProxy(port: Int)
@@ -20,6 +22,7 @@ enum StatusIssue: Identifiable, Equatable {
         switch self {
         case .chatGPT: "chatgpt"
         case .proxyBridge: "proxybridge"
+        case .clashDNS: "clash-dns"
         case .networkExtension: "network-extension"
         case .dedicatedProfile: "dedicated-profile"
         case .localProxy: "local-proxy"
@@ -31,6 +34,7 @@ enum StatusIssue: Identifiable, Equatable {
         case let .chatGPT(requiresUpdate):
             requiresUpdate ? "ChatGPT 需要更新" : "尚未安装 ChatGPT"
         case .proxyBridge: "ProxyBridge 需要修复"
+        case .clashDNS: "Clash DNS 检测"
         case .networkExtension: "网络扩展未启用"
         case .dedicatedProfile: "专用配置未启用"
         case .localProxy: "Codex 连通检查未通过"
@@ -47,6 +51,8 @@ enum StatusIssue: Identifiable, Equatable {
             }
         case .proxyBridge:
             "点击修复后，将通过设置中的代理下载并校验官方安装包，再由命令行安装。安装需要 macOS 管理员认证。"
+        case let .clashDNS(check):
+            check.canRepair ? "\(check.detail)。点击修复后，ChatGPT Proxy 将在保护期间使用加密 DNS，结束保护后恢复原配置。" : check.detail
         case .networkExtension:
             "请在系统设置的“网络扩展”中启用 ProxyBridge，完成后返回并重新检测。"
         case .dedicatedProfile:
@@ -60,6 +66,7 @@ enum StatusIssue: Identifiable, Equatable {
         switch self {
         case let .chatGPT(requiresUpdate): requiresUpdate ? "更新 ChatGPT" : "下载 ChatGPT"
         case .proxyBridge: "修复"
+        case let .clashDNS(check): check.canRepair ? "修复" : "重新检测"
         case .networkExtension: "打开网络扩展设置"
         case let .dedicatedProfile(manualFallback):
             manualFallback ? "启用代理" : "启用代理"
@@ -71,6 +78,7 @@ enum StatusIssue: Identifiable, Equatable {
         switch self {
         case .chatGPT: .downloadChatGPT
         case .proxyBridge: .installProxyBridge
+        case let .clashDNS(check): check.canRepair ? .repairClashDNS : .refreshStatus
         case .networkExtension: .openNetworkExtensionSettings
         case let .dedicatedProfile(manualFallback):
             manualFallback ? .installProfile : .installProfile

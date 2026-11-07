@@ -114,7 +114,8 @@ actor ProtectionEngine {
             let pf = DNSFirewallState.isEnabled(try await DNSSystemCommand.run("/sbin/pfctl", ["-s","info"]))
             return ["platform":"macos", "ownerUID":ownerUID, "ownerPID":peerPID, "corePID":try await platform.corePID(socket: socket),
                     "socket":socket, "proxyPort":port, "source":yaml, "general":String(decoding:general,as:UTF8.self),
-                    "sourceGeneration":generation, "bootSession":try DNSProtectionConfiguration.bootSession(),
+                    "sourceGeneration":generation, "bootstrapRepair":request.bootstrapRepair ?? [:],
+                    "bootSession":try DNSProtectionConfiguration.bootSession(),
                     "services":try JSONSerialization.jsonObject(with:JSONEncoder().encode(services)), "pfWasEnabled":pf,
                     "selection":try await client.selection(socket: socket),
                     "snapshot":["mode":snapshot.mode, "current":snapshot.current as Any? ?? NSNull()]] as [String:Any]

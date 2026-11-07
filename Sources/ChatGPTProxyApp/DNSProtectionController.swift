@@ -4,11 +4,108 @@ import CryptoKit
 import Darwin
 import ChatGPTProxyCore
 
+enum ClashDNSCheck: Equatable {
+    case unchecked, ready, prepared
+    case needsRepair(String), unavailable(String)
+
+    var detail: String {
+        switch self {
+        case .unchecked: "等待检测"
+        case .ready: "已配置加密 DNS"
+        case .prepared: "已就绪 · 启动保护时应用"
+        case let .needsRepair(reason), let .unavailable(reason): reason
+        }
+    }
+
+    var isReady: Bool { self == .ready || self == .prepared }
+    var canRepair: Bool { if case .needsRepair = self { true } else { false } }
+}
+
+struct ClashDNSConfiguration {
+    let source: URL
+    let generation: String
+    let socket: String
+    let yaml: String
+    let general: Data
+    let saved: String?
+
+    static func load(port: UInt16) async throws -> Self {
+        let client = ClashControllerClient()
+        let snapshot = try await client.snapshot(port: port)
+        guard snapshot.mode.lowercased() == "global", let node = snapshot.current,
+              !["DIRECT", "REJECT", "PASS"].contains(node.uppercased()) else {
+            throw MonitorError.message("请在 Clash Party 中使用全局模式并选择代理节点")
+        }
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/mihomo-party")
+        let source = directory.appendingPathComponent("work/config.yaml")
+        let generation = try DNSProtectionConfiguration.sourceGeneration(at: source)
+        let yaml = try String(contentsOf: source, encoding: .utf8)
+        let saved = directory.appendingPathComponent("mihomo.yaml")
+        let savedYAML = (try? DNSProtectionConfiguration.sourceGeneration(at: saved)).flatMap { _ in
+            try? String(contentsOf: saved, encoding: .utf8)
+        }
+        let general = try await client.request(socket: snapshot.socket, path: "/configs")
+        return Self(source: source, generation: generation, socket: snapshot.socket, yaml: yaml,
+                    general: general, saved: savedYAML)
+    }
+}
+
 @MainActor
 final class DNSProtectionController: ObservableObject {
     @Published private(set) var status = DNSProtectionStatus(phase: .disabled, detail: "DNS 保护已关闭")
     private var polling: Task<Void, Never>?
-    private let client = ClashControllerClient()
+    @Published private(set) var clashCheck: ClashDNSCheck = .unchecked
+    private let defaults: UserDefaults
+    private let loadConfiguration: (UInt16) async throws -> ClashDNSConfiguration
+    private static let repairPreference = "repairClashDNSDuringProtection"
+
+    init(defaults: UserDefaults = .standard,
+         loadConfiguration: @escaping (UInt16) async throws -> ClashDNSConfiguration = ClashDNSConfiguration.load) {
+        self.defaults = defaults
+        self.loadConfiguration = loadConfiguration
+    }
+
+    func resetClashCheck() { clashCheck = .unchecked }
+
+    // Preview the exact protected configuration. Only activation sends it to the helper.
+    @discardableResult
+    func checkClash(port: Int, prepareRepair: Bool = false) async throws -> DNSProtectionRequest {
+        do {
+            let port = try ProxyConfiguration.validatedPort(String(port))
+            let config = try await loadConfiguration(port)
+            let runtime = try DNSProtectionConfiguration.runtimeYAML(config.yaml, general: config.general)
+            let inspection = try DNSProtectionConfiguration.inspectBootstrap(runtime, saved: config.saved)
+            _ = try DNSProtectionConfiguration.protectedYAML(runtime, bootstrapRepair: inspection.replacements)
+            guard try DNSProtectionConfiguration.sourceGeneration(at: config.source) == config.generation else {
+                throw MonitorError.message("Clash 配置已更改，请重新检测")
+            }
+
+            var request = DNSProtectionRequest(command: .enable, port: port, socket: config.socket,
+                                               yaml: config.yaml, sourceGeneration: config.generation)
+            if inspection.replacements.isEmpty {
+                clashCheck = .ready
+            } else if prepareRepair || defaults.bool(forKey: Self.repairPreference) {
+                if prepareRepair { defaults.set(true, forKey: Self.repairPreference) }
+                request.bootstrapRepair = inspection.replacements
+                clashCheck = .prepared
+            } else {
+                clashCheck = .needsRepair(inspection.plaintext ? "正在使用明文 DNS" : "引导或节点 DNS 配置不符合要求")
+            }
+            return request
+        } catch {
+            clashCheck = .unavailable(error.localizedDescription)
+            throw error
+        }
+    }
+
+    func requireClashDNS(port: Int) async throws -> DNSProtectionRequest {
+        let request = try await checkClash(port: port)
+        guard clashCheck.isReady else {
+            throw MonitorError.message("请点击「Clash DNS」右侧的「修复」")
+        }
+        return request
+    }
 
     func refresh() async {
         do {
@@ -24,24 +121,11 @@ final class DNSProtectionController: ObservableObject {
     func enable(port: UInt16, beforeActivation: () throws -> Void = {}) async throws {
         status = .init(phase: .enabling, detail: "正在启用系统 DNS 保护")
         do {
-            let snapshot = try await client.snapshot(port: port)
-            guard snapshot.mode.lowercased() == "global", let node = snapshot.current,
-                  !["DIRECT", "REJECT", "PASS"].contains(node.uppercased()) else {
-                throw MonitorError.message("DNS 保护要求 Clash Party 全局模式并选择代理节点")
-            }
-            let source = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/mihomo-party/work/config.yaml")
-            let generation = try DNSProtectionConfiguration.sourceGeneration(at: source)
-            let yaml = try String(contentsOf: source, encoding: .utf8)
-            _ = try DNSProtectionConfiguration.protectedYAML(
-                DNSProtectionConfiguration.runtimeYAML(yaml, general: await client.request(socket: snapshot.socket, path: "/configs")))
+            let request = try await requireClashDNS(port: Int(port))
             try await installIfNeeded()
             try Task.checkCancellation()
             try beforeActivation()
-            guard try DNSProtectionConfiguration.sourceGeneration(at: source) == generation else {
-                throw MonitorError.message("Clash 配置已更改，请重新启用 DNS 保护")
-            }
-            status = try await DNSProtectionIPC.request(.init(command: .enable, port: port, socket: snapshot.socket, yaml: yaml, sourceGeneration: generation))
+            status = try await DNSProtectionIPC.request(request)
             guard status.isEnabled, status.version == DNSProtectionConfiguration.version else { throw MonitorError.message(status.detail) }
             startPolling()
         } catch {
