@@ -30,7 +30,7 @@ macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Ru
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.4-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.6-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 
@@ -81,6 +81,7 @@ PF 状态清理目前限定已审核的 Darwin 23–25（macOS 14、15、26）AB
 
 后台监控与自动切换：
 - 打开应用即监控，关闭窗口后继续驻留菜单栏；菜单栏可暂停、恢复或退出，暂停状态会保存。
+- 菜单栏使用实时浮动面板，状态行和操作按钮位置固定，心跳刷新不会移动鼠标悬停高亮。长文本截断显示，悬停可查看全文；点击面板外或按 Esc 关闭面板。
 - 持续复用一条 TCP/TLS 连接，每 2 秒向上述 Codex 地址发送无凭据 HTTP/1.1 心跳，要求 HTTP 401。初次建链最多等待 10 秒，之后连续 10 秒无有效响应、连接关闭、TLS 错误或异常状态均判为失败；不使用登录凭据，不跟随重定向，保留 TLS 证书校验，由代理端解析域名。
 - 同一连接从首个有效心跳起考核 60 秒。未满 60 秒断线计一次，1 秒后重连；连续两次才启动节点恢复。有效心跳确认已满 60 秒即清零失败计数，继续维持原连接。底层重连重新计时；维持阶段不因延迟超过 800 ms 切换。
 - 仅支持 Clash Party 全局模式，恢复始终限制在同一订阅内。先测试当前地区，再按已勾选备用地区从上到下尝试；每地区最多并发测速 4 个节点，每轮每节点只测一次。使用同一 Codex 地址、预期状态 401，测速期限 10 秒；仅延迟大于 0 且不超过 800 ms 的候选入选，并按延迟、节点名排序。
@@ -94,7 +95,7 @@ PF 状态清理目前限定已审核的 Darwin 23–25（macOS 14、15、26）AB
 
 主窗口齿轮、菜单栏“设置…”或 ⌘, 可打开设置窗口。“开机自启动”使用系统登录项注册，开启后在“系统设置 → 通用 → 登录项与扩展 → 登录时打开”中显示 ChatGPT Proxy。登录启动仅驻留菜单栏；手动启动显示主窗口。首次安装默认不注册，状态以系统实际设置为准。
 
-设置中的“外观 → 颜色主题”支持跟随系统（默认），以及参考 [VS Code 内置主题](https://github.com/microsoft/vscode/tree/main/extensions) 的 Dark Modern、Light Modern、Monokai 和 Solarized Dark 配色。主题立即应用到主窗口、设置窗口和首次配置面板，并自动保存；选择“跟随系统”可恢复 macOS 外观。
+设置中的“外观 → 颜色主题”支持跟随系统（默认），以及参考 [VS Code 内置主题](https://github.com/microsoft/vscode/tree/main/extensions) 的 Dark Modern、Light Modern、Monokai 和 Solarized Dark 配色。主题立即应用到主窗口、菜单栏面板、设置窗口和首次配置面板，并自动保存；选择“跟随系统”可恢复 macOS 外观。
 
 ProxyBridge 活动日志位于 `~/Library/Logs/ChatGPT Proxy/proxybridge.log`，达到 5 MB 轮转。主窗口可查看日志、取消下载或启用；修复入口通过命令行安装器及 macOS 原生管理员认证完成。
 

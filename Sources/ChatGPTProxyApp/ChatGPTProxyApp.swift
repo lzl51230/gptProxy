@@ -95,6 +95,7 @@ struct ChatGPTProxyApp: App {
                 .renderingMode(.original)
                 .accessibilityLabel("ChatGPT Proxy")
         }
+        .menuBarExtraStyle(.window)
         Settings {
             SettingsView(model: delegate.model, login: delegate.login)
                 .padding(20)
@@ -102,24 +103,5 @@ struct ChatGPTProxyApp: App {
                 .frame(width: 480, height: 680)
         }
         .windowResizability(.contentSize)
-    }
-}
-
-private struct MonitorMenu: View {
-    @ObservedObject var monitor: AutoSwitchMonitor
-    let showMainWindow: () -> Void
-    var body: some View {
-        Text(monitor.status)
-        Text(monitor.currentNode)
-        if let latency = monitor.latency { Text("Codex 心跳：\(latency)ms") }
-        Text("已验证 \(Int(monitor.connectionSeconds)) 秒 · 未满 60 秒失败 \(monitor.consecutiveFailures)/2")
-        if monitor.phase == .validating { Text("候选长连接验收：\(Int(monitor.connectionSeconds))/10 秒") }
-        if let reason = monitor.disconnectReason { Text("上次断线：\(reason)") }
-        Text(monitor.lastSwitch)
-        Divider()
-        Button("打开主窗口", action: showMainWindow)
-        SettingsLink { Text("设置…") }
-        Button(monitor.paused ? "恢复监控" : "暂停监控") { monitor.togglePaused() }
-        Button("退出") { monitor.stop(); NSApp.terminate(nil) }
     }
 }
