@@ -126,12 +126,13 @@ struct ContentView: View {
                 Button {
                     Task { await model.launchChatGPT() }
                 } label: {
-                    Label(model.gpt.isRunning ? "重启 ChatGPT" : "启动 ChatGPT", systemImage: "play.fill")
+                    Label(model.gpt.isRunning ? "ChatGPT 已运行" : "启动 ChatGPT",
+                          systemImage: model.gpt.isRunning ? "checkmark.circle.fill" : "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(model.isBusy)
+                .disabled(model.isBusy || model.gpt.isRunning)
 
                 Button {
                     model.openCodexDirectory()
