@@ -9,6 +9,8 @@ final class AppModel: ObservableObject {
         case idle
         case checking
         case ready
+        case waiting(String)
+        case paused
         case launching
         case configuringProfile
         case preparingClashDNS
@@ -23,7 +25,9 @@ final class AppModel: ObservableObject {
             case .checking:
                 "正在检测本地代理..."
             case .ready:
-                "可以安全启动 ChatGPT"
+                "代理与 DNS 保护正常"
+            case let .waiting(message): message
+            case .paused: "DNS 保护已暂停，使用原 DNS"
             case .launching:
                 "正在启动 ChatGPT..."
             case .configuringProfile:
@@ -43,6 +47,16 @@ final class AppModel: ObservableObject {
     let cli = ProxyBridgeCLIController()
     let repairService = ProxyBridgeRepairService()
     let dns = DNSProtectionController()
+    let gpt = GPTProcessMonitor()
+    let recovery = ProtectionSupervisor()
+    private var maintenance: Task<Void, Never>?
+    private var observations: Set<AnyCancellable> = []
+    private var shuttingDown = false
+    private var summaryScheduled = false
+    private var pendingPortChange = false
+    private var operationPort: Int?
+    private var nextInstallationCheck: TimeInterval = 0
+    @Published private(set) var protectionPaused: Bool
     private var dnsObservation: AnyCancellable?
     private var clashDNSObservation: AnyCancellable?
     private var repairObservation: AnyCancellable?
@@ -52,11 +66,10 @@ final class AppModel: ObservableObject {
     @Published var proxyPort: Int {
         didSet {
             guard proxyPort != oldValue else { return }
-            guard activeOperation == nil else { return }
+            pendingPortChange = true
+            operationCancelled = true
+            recovery.reset()
             dns.resetClashCheck()
-            Task { try? await dns.restore() }
-            if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
-            phase = .idle
             proxyReachable = false
             codexLatencyMilliseconds = nil
         }
@@ -74,7 +87,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var applyingProtection = false
     @Published var showingSetup = false
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let protectedLauncher: (@MainActor () async throws -> Void)?
     private let profileConfigurator: (@MainActor () async throws -> Void)?
     private let refreshAfterProfileConfiguration: (@MainActor () async -> Void)?
     private let relayLifecycle = RelayLifecycle()
@@ -86,49 +100,133 @@ final class AppModel: ObservableObject {
 
     init(
         profileConfigurator: (@MainActor () async throws -> Void)? = nil,
-        refreshAfterProfileConfiguration: (@MainActor () async -> Void)? = nil
+        refreshAfterProfileConfiguration: (@MainActor () async -> Void)? = nil,
+        defaults: UserDefaults = .standard,
+        protectedLauncher: (@MainActor () async throws -> Void)? = nil
     ) {
+        self.defaults = defaults
+        self.protectedLauncher = protectedLauncher
+        protectionPaused = defaults.bool(forKey: "dnsProtectionPaused")
         self.profileConfigurator = profileConfigurator
         self.refreshAfterProfileConfiguration = refreshAfterProfileConfiguration
         let stored = defaults.integer(forKey: "proxyPort")
         proxyPort = stored > 0 ? stored : Int(ProxyConfiguration.defaultProxyPort)
-        clashDNSObservation = dns.$clashCheck.sink { [weak self] _ in self?.objectWillChange.send() }
-        dnsObservation = dns.$status.sink { [weak self] value in
-            guard let self else { return }
-            self.objectWillChange.send()
-            if !value.isEnabled, self.phase == .ready {
-                self.phase = .failed(value.detail)
-            }
-        }
-        cliObservation = cli.$state.sink { [weak self] state in
-            guard let self else { return }
-            self.proxyBridgeProfileReady = state == .running
-            switch state {
-            case .waitingForApproval: self.phase = .failed("等待 macOS 批准网络扩展，请打开网络扩展设置；可取消启用。")
-            case let .failed(message): self.phase = .failed(message)
-            default: break
-            }
-        }
+        clashDNSObservation = dns.$clashCheck.sink { [weak self] _ in self?.scheduleSummary() }
+        dnsObservation = dns.$status.sink { [weak self] _ in self?.scheduleSummary() }
+        cliObservation = cli.$state.sink { [weak self] _ in self?.scheduleSummary() }
+        monitor.objectWillChange.sink { [weak self] _ in self?.scheduleSummary() }.store(in: &observations)
+        gpt.objectWillChange.sink { [weak self] _ in self?.scheduleSummary() }.store(in: &observations)
         repairObservation = repairService.$stage.sink { [weak self] stage in
             guard stage != .idle else { return }
             self?.phase = .repairing(stage.rawValue)
         }
-        if profileConfigurator == nil, let port = UInt16(exactly: proxyPort), port > 0 {
-            monitor.start(port: port)
-            Task {
-                do { try await configureBundledProxyBridgeProfile(); await refreshStatus() }
-                catch { phase = .failed(error.localizedDescription) }
+        if profileConfigurator == nil {
+            updateInstalledApps()
+            if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
+            gpt.start()
+            dns.startMonitoring()
+            maintenance = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.maintainProtection()
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
             }
         }
+    }
+
+    private func scheduleSummary() {
+        guard !summaryScheduled else { return }
+        summaryScheduled = true
+        // Combine publishes before assigning the new value.
+        Task { @MainActor [weak self] in
+            self?.summaryScheduled = false
+            self?.updateSummary()
+        }
+    }
+
+    func resumeAfterWake() {
+        recovery.reset()
+        nextInstallationCheck = 0
+        gpt.refresh()
+        if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
+        Task { await maintainProtection() }
+    }
+
+    private func maintainProtection() async {
+        guard !shuttingDown, activeOperation == nil else { return }
+        if ProcessInfo.processInfo.systemUptime >= nextInstallationCheck {
+            updateInstalledApps()
+            extensionEnabled = await SystemExtensionChecker.proxyBridgeIsEnabled()
+            nextInstallationCheck = ProcessInfo.processInfo.systemUptime + 30
+        }
+        guard !shuttingDown, activeOperation == nil else { return }
+        let enabled = dns.status.isEnabled && cli.isReady && extensionEnabled && !pendingPortChange
+        if protectionPaused && (dns.status.phase != .disabled || !cli.isReady || pendingPortChange) && recovery.retrySeconds == 0 {
+            guard let operation = beginOperation(phase: .configuringProfile) else { return }
+            await recovery.tick(enabled: false, paused: false, prepare: {
+                if self.dns.status.phase != .disabled { try await self.dns.restore() }
+                try self.checkOperationCancellation()
+                guard self.extensionEnabled else { throw AppError.extensionDisabled }
+                if !self.cli.isReady || self.pendingPortChange { try await self.configureBundledProxyBridgeProfile() }
+            }, activate: {})
+            endOperation(operation)
+        } else if !protectionPaused && !enabled && recovery.retrySeconds == 0 {
+            guard let operation = beginOperation(phase: .checking) else { return }
+            await recovery.tick(enabled: false, paused: false, prepare: {
+                try self.checkOperationCancellation()
+                if self.dns.status.phase != .disabled { try await self.dns.restore() }
+                try self.checkOperationCancellation()
+                guard self.extensionEnabled else { throw AppError.extensionDisabled }
+                try await self.configureBundledProxyBridgeProfile()
+                _ = try await self.dns.requireClashDNS(port: self.proxyPort)
+                try await self.dns.requireInstalledHelper()
+                try self.checkOperationCancellation()
+            }, activate: {
+                try await self.activateProtection(launchGPT: false, allowAuthorization: false)
+            })
+            endOperation(operation)
+        } else if enabled || (protectionPaused && dns.status.phase == .disabled && cli.isReady && !pendingPortChange) {
+            await recovery.tick(enabled: enabled, paused: protectionPaused, prepare: {}, activate: {})
+        }
+        updateSummary()
+    }
+
+    private func updateSummary() {
+        objectWillChange.send()
+        guard profileConfigurator == nil, activeOperation == nil, !shuttingDown else { return }
+        proxyBridgeProfileReady = cli.isReady
+        if !monitor.paused {
+            proxyReachable = monitor.phase == .maintaining && monitor.latency != nil
+            codexLatencyMilliseconds = proxyReachable ? monitor.latency : nil
+        }
+        if protectionPaused {
+            phase = dns.status.phase == .disabled ? .paused
+                : .failed("暂停保护尚未完成：\(dns.status.detail)")
+        } else if !proxyBridgeInstalled {
+            phase = .failed("ProxyBridge 需要修复：\(proxyBridgeStatus.detail)")
+        } else if !extensionEnabled {
+            phase = .failed("ProxyBridge 网络扩展尚未启用，请在系统设置中批准。")
+        } else if dns.status.isEnabled && cli.isReady {
+            phase = proxyReachable ? .ready : .waiting("DNS 已保护，正在恢复代理连接…")
+        } else {
+            let reason = recovery.lastError ?? dns.status.detail
+            let delay = recovery.retrySeconds > 0 ? "（\(recovery.retrySeconds) 秒后重试）" : ""
+            let prefix = proxyReachable && dns.status.phase == .disabled
+                ? "联网已恢复，DNS 保护待恢复" : "DNS 保护待恢复"
+            phase = .waiting("\(prefix)：\(reason)\(delay)")
+        }
+        ProtectionDiagnostics.record(phase: phase.message, dns: dns.status,
+            pids: gpt.processIdentifiers, paused: protectionPaused, retry: recovery.failures,
+            proxyReady: proxyReachable, cliReady: cli.isReady)
     }
 
     var isBusy: Bool {
         activeOperation != nil
     }
 
-    var protectionReady: Bool { dns.status.isEnabled && !applyingProtection }
+    var protectionReady: Bool { dns.status.isEnabled && cli.isReady && !applyingProtection }
     var protectionDetail: String {
-        applyingProtection ? "正在应用 DNS 与 IPv4 策略，等待 GPT 连接重建" : dns.status.detail
+        applyingProtection ? "正在应用 DNS 与 IPv4 策略，重建网络连接" : dns.status.detail
     }
 
     var chatGPTInstalled: Bool {
@@ -145,7 +243,7 @@ final class AppModel: ObservableObject {
 
     func refreshStatus() async {
         guard let operation = beginOperation(phase: .checking) else { return }
-        defer { endOperation(operation) }
+        defer { endOperation(operation); updateSummary() }
         await dns.refresh()
         _ = try? await dns.checkClash(port: proxyPort)
 
@@ -192,6 +290,7 @@ final class AppModel: ObservableObject {
 
         do {
             try await guardedRestartChatGPT()
+            setProtectionPaused(false)
             phase = .ready
         } catch {
             phase = .failed(error.localizedDescription)
@@ -219,13 +318,27 @@ final class AppModel: ObservableObject {
     }
     func cancelProxyStartup() async {
         operationCancelled = true
-        try? await dns.restore()
+        setProtectionPaused(true)
+        recovery.reset()
         if repairService.isBusy { repairService.cancel() }
         if !repairService.isBusy || repairService.stage == .activating { await cli.stopAndWait() }
+        while activeOperation != nil { try? await Task.sleep(for: .milliseconds(100)) }
+        try? await dns.restore()
+        updateSummary()
     }
 
     func shutdown() async {
+        shuttingDown = true
         operationCancelled = true
+        recovery.reset()
+        maintenance?.cancel()
+        if !repairService.isBusy { await cli.stopAndWait() }
+        if repairService.canCancel { repairService.cancel() }
+        while activeOperation != nil { try? await Task.sleep(for: .milliseconds(100)) }
+        await maintenance?.value
+        maintenance = nil
+        gpt.stop()
+        dns.stopMonitoring()
         do { try await dns.restore() }
         catch { phase = .failed(error.localizedDescription) }
         if repairService.stage == .activating { await cli.stopAndWait() }
@@ -237,6 +350,8 @@ final class AppModel: ObservableObject {
 
     func enableDNSProtection() async {
         guard let operation = beginOperation(phase: .configuringProfile) else { return }
+        setProtectionPaused(false)
+        recovery.reset()
         defer { endOperation(operation) }
         do {
             _ = try await dns.requireClashDNS(port: proxyPort)
@@ -248,10 +363,19 @@ final class AppModel: ObservableObject {
     }
 
     func restoreDNSProtection() async {
+        setProtectionPaused(true)
+        recovery.reset()
+        operationCancelled = true
+        while activeOperation != nil { try? await Task.sleep(for: .milliseconds(100)) }
         guard let operation = beginOperation(phase: .checking) else { return }
         defer { endOperation(operation) }
-        do { try await dns.restore(); phase = .idle }
+        do { try await dns.restore(); phase = .paused }
         catch { phase = .failed(error.localizedDescription) }
+    }
+
+    private func setProtectionPaused(_ paused: Bool) {
+        protectionPaused = paused
+        defaults.set(paused, forKey: "dnsProtectionPaused")
     }
 
     func openNetworkExtensionSettings() {
@@ -362,14 +486,27 @@ final class AppModel: ObservableObject {
     }
 
     private func configureBundledProxyBridgeProfile() async throws {
+        let port = try validatedPort()
+        if pendingPortChange {
+            try await dns.restore()
+            await cli.stopAndWait()
+            await relayLifecycle.stopAndWait()
+            try checkOperationCancellation()
+            pendingPortChange = false
+            defaults.set(Int(port), forKey: "proxyPort")
+            monitor.start(port: port)
+        }
         updateInstalledApps()
         guard proxyBridgeInstalled else { throw AppError.launchStepFailed("ProxyBridge 需要修复", proxyBridgeStatus.detail) }
         guard let url = Bundle.main.url(forResource: "ChatGPT-Only", withExtension: "pbprofile") else { throw AppError.profileResourceMissing }
         let profile: Data
         do { profile = try Data(contentsOf: url) }
         catch { throw AppError.launchStepFailed("读取内置规则", error.localizedDescription) }
-        let port = try validatedPort()
-        _ = try await ProxyHealthChecker.check(port: port)
+        let health = try await ProxyHealthChecker.check(port: port)
+        proxyReachable = true
+        supportsUDP = health.supportsUDP
+        codexLatencyMilliseconds = health.codexLatencyMilliseconds
+        try checkOperationCancellation()
         try Task.checkCancellation()
         try await ensureRelay(upstreamPort: port)
         // The upstream CLI distinguishes another CLI from its GUI and reports conflicts.
@@ -400,6 +537,8 @@ final class AppModel: ObservableObject {
     private var cliProcessIdentifier: pid_t { cli.processIdentifier ?? -1 }
 
     private func guardedRestartChatGPT() async throws {
+        recovery.reset()
+        if let protectedLauncher { try await protectedLauncher(); return }
         let port = try validatedPort()
         defaults.set(Int(port), forKey: "proxyPort")
         updateInstalledApps()
@@ -423,35 +562,37 @@ final class AppModel: ObservableObject {
         try await activateProtection(launchGPT: true)
     }
 
-    private func activateProtection(launchGPT: Bool) async throws {
+    private func activateProtection(launchGPT: Bool, allowAuthorization: Bool = true) async throws {
         let port = try validatedPort()
         applyingProtection = true
         await monitor.stopAndWait()
         defer { applyingProtection = false; monitor.start(port: port) }
         try await ProtectionActivation.run(launchGPT: launchGPT,
             isGPTRunning: { !self.runningChatGPTApplications().isEmpty },
-            enable: { try await self.dns.enable(port: port, beforeActivation: { try self.checkOperationCancellation() }) },
+            enable: { try await self.dns.enable(port: port, allowAuthorization: allowAuthorization, beforeActivation: { try self.checkOperationCancellation() }) },
             restartGPT: { try await self.restartChatGPT() }, restore: { try await self.dns.restore() },
             checkCancellation: { try self.checkOperationCancellation() })
     }
 
     private func beginOperation(phase newPhase: Phase) -> UUID? {
-        guard activeOperation == nil else { return nil }
+        guard activeOperation == nil, !shuttingDown else { return nil }
         let operation = UUID()
         activeOperation = operation
         operationCancelled = false
+        operationPort = proxyPort
         phase = newPhase
         return operation
     }
 
     private func checkOperationCancellation() throws {
         try Task.checkCancellation()
-        if operationCancelled { throw CancellationError() }
+        if operationCancelled || shuttingDown || (operationPort != nil && operationPort != proxyPort) { throw CancellationError() }
     }
 
     private func endOperation(_ operation: UUID) {
         guard activeOperation == operation else { return }
         activeOperation = nil
+        operationPort = nil
     }
 
     private func ensureRelay(upstreamPort: UInt16) async throws {

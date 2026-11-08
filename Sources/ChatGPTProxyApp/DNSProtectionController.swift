@@ -55,15 +55,23 @@ struct ClashDNSConfiguration {
 final class DNSProtectionController: ObservableObject {
     @Published private(set) var status = DNSProtectionStatus(phase: .disabled, detail: "DNS 保护已关闭")
     private var polling: Task<Void, Never>?
+    private var observationGeneration = 0
+    private var observationBoundary: TimeInterval = 0
+    private var pollingID = UUID()
+    private var mutating = false
+    private var activity: NSObjectProtocol?
+    private let requestIPC: @Sendable (DNSProtectionRequest) async throws -> DNSProtectionStatus
     @Published private(set) var clashCheck: ClashDNSCheck = .unchecked
     private let defaults: UserDefaults
     private let loadConfiguration: (UInt16) async throws -> ClashDNSConfiguration
     private static let repairPreference = "repairClashDNSDuringProtection"
 
     init(defaults: UserDefaults = .standard,
-         loadConfiguration: @escaping (UInt16) async throws -> ClashDNSConfiguration = ClashDNSConfiguration.load) {
+         loadConfiguration: @escaping (UInt16) async throws -> ClashDNSConfiguration = ClashDNSConfiguration.load,
+         requestIPC: @escaping @Sendable (DNSProtectionRequest) async throws -> DNSProtectionStatus = DNSProtectionIPC.request) {
         self.defaults = defaults
         self.loadConfiguration = loadConfiguration
+        self.requestIPC = requestIPC
     }
 
     func resetClashCheck() { clashCheck = .unchecked }
@@ -108,26 +116,54 @@ final class DNSProtectionController: ObservableObject {
     }
 
     func refresh() async {
+        let generation = observationGeneration
         do {
-            let response = try await DNSProtectionIPC.request(.init(command: status.isEnabled ? .heartbeat : .status))
-            status = response.isEnabled && response.version != DNSProtectionConfiguration.version
-                ? .init(phase: .failed, detail: "辅助服务需要升级，请重新启用 DNS / IPv4 保护") : response
-        }
-        catch {
-            if status.isEnabled { status = .init(phase: .failed, detail: "DNS 辅助服务失去响应，正在自动恢复") }
-        }
+            // The helper only renews the lease for its owning PID. A transient UI
+            // failure must not turn the next heartbeat into a non-renewing status read.
+            let response = try await requestIPC(.init(command: .heartbeat))
+            accept(response, generation: generation)
+        } catch { acceptFailure(generation: generation) }
     }
 
-    func enable(port: UInt16, beforeActivation: () throws -> Void = {}) async throws {
+    private func accept(_ response: DNSProtectionStatus, generation: Int) {
+        guard generation == observationGeneration, !mutating else { return }
+        let next = response.isEnabled && response.version != DNSProtectionConfiguration.version
+            ? DNSProtectionStatus(phase: .failed, detail: "辅助服务需要升级，请重新启用 DNS / IPv4 保护") : response
+        if next != status { status = next }
+    }
+
+    private func acceptFailure(generation: Int) {
+        guard generation == observationGeneration, !mutating else { return }
+        let next = DNSProtectionStatus(phase: .failed, detail: "DNS 辅助服务未响应，等待恢复联网后重试")
+        if next != status { status = next }
+    }
+
+    private func beginMutation() throws {
+        guard !mutating else { throw MonitorError.message("DNS 操作正在进行") }
+        observationGeneration += 1
+        observationBoundary = ProcessInfo.processInfo.systemUptime
+        mutating = true
+    }
+
+    private func endMutation() {
+        mutating = false
+        observationGeneration += 1
+        observationBoundary = ProcessInfo.processInfo.systemUptime
+    }
+
+    func enable(port: UInt16, allowAuthorization: Bool = true,
+                beforeActivation: () throws -> Void = {}) async throws {
+        try beginMutation()
+        defer { endMutation() }
         status = .init(phase: .enabling, detail: "正在启用系统 DNS 保护")
         do {
             let request = try await requireClashDNS(port: Int(port))
-            try await installIfNeeded()
+            try await installIfNeeded(allowAuthorization: allowAuthorization)
             try Task.checkCancellation()
             try beforeActivation()
-            status = try await DNSProtectionIPC.request(request)
+            status = try await requestIPC(request)
             guard status.isEnabled, status.version == DNSProtectionConfiguration.version else { throw MonitorError.message(status.detail) }
-            startPolling()
+            startMonitoring()
         } catch {
             status = .init(phase: .failed, detail: "DNS 保护未启用：\(error.localizedDescription)")
             throw error
@@ -135,32 +171,57 @@ final class DNSProtectionController: ObservableObject {
     }
 
     func restore() async throws {
-        polling?.cancel(); polling = nil
-        // No installed service and no active transaction is an ordinary first-run state.
+        try beginMutation()
+        defer { endMutation() }
         guard FileManager.default.fileExists(atPath: DNSProtectionConfiguration.helperPath) else {
             status = .init(phase: .disabled, detail: "DNS 保护已关闭")
             return
         }
-        status = try await DNSProtectionIPC.request(.init(command: .restore))
-        guard status.phase == .disabled else {
-            startPolling()
-            throw MonitorError.message(status.detail)
-        }
+        status = try await requestIPC(.init(command: .restore))
+        guard status.phase == .disabled else { throw MonitorError.message(status.detail) }
     }
 
-    private func startPolling() {
-        polling?.cancel()
-        polling = Task { [weak self] in
+    func startMonitoring(interval: Duration = .seconds(2)) {
+        guard polling == nil else { return }
+        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
+                                                         reason: "维护 DNS 保护心跳")
+        let request = requestIPC
+        let id = UUID(); pollingID = id
+        polling = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled, let self else { return }
-                await self.refresh()
-                if self.status.phase == .disabled { return }
+                let began = ProcessInfo.processInfo.systemUptime
+                do {
+                    let response = try await request(.init(command: .heartbeat))
+                    guard !Task.isCancelled else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, self.pollingID == id, began >= self.observationBoundary else { return }
+                        self.accept(response, generation: self.observationGeneration)
+                    }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, self.pollingID == id, began >= self.observationBoundary else { return }
+                        self.acceptFailure(generation: self.observationGeneration)
+                    }
+                }
+                do { try await Task.sleep(for: interval) } catch { return }
             }
         }
     }
 
-    private func installIfNeeded() async throws {
+    func stopMonitoring() {
+        observationGeneration += 1
+        pollingID = UUID()
+        observationBoundary = ProcessInfo.processInfo.systemUptime
+        polling?.cancel(); polling = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
+    }
+
+    func requireInstalledHelper() async throws {
+        try await installIfNeeded(allowAuthorization: false)
+    }
+
+    private func installIfNeeded(allowAuthorization: Bool) async throws {
         guard let bundled = Bundle.main.url(forResource: "DNSProtectionHelper", withExtension: nil) else {
             throw MonitorError.message("DNS 辅助服务资源缺失，请安装完整应用")
         }
@@ -169,6 +230,10 @@ final class DNSProtectionController: ObservableObject {
            SHA256.hash(data: existing) == SHA256.hash(data: try Data(contentsOf: bundled)),
            let response = try? await DNSProtectionIPC.request(.init(command: .status)),
            response.version == DNSProtectionConfiguration.version { return }
+
+        guard allowAuthorization else {
+            throw MonitorError.message("DNS 辅助服务需要安装或更新，请点击「启用 DNS / IPv4 保护」完成系统授权")
+        }
 
         // Administrator authorization installs a root-owned copy. The daemon never
         // executes a binary or script from the user's application directory.

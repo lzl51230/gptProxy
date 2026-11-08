@@ -10,6 +10,13 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 22) {
             header
             statusSection
+            if let reason = model.dns.status.lastStopReason {
+                Text("上次停保：\(reason)")
+                    .font(.caption)
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(2)
+                    .help("\(model.dns.status.lastStopAt ?? "") · \(reason)")
+            }
             Divider()
             MonitorStatusView(monitor: model.monitor)
             actionSection
@@ -65,7 +72,7 @@ struct ContentView: View {
             statusRow(
                 "ChatGPT",
                 ready: model.chatGPTInstalled,
-                detail: model.chatGPTInstalled ? "已安装新版" : model.chatGPTNeedsUpdate ? "需要更新" : "未安装",
+                detail: model.chatGPTInstalled ? (model.gpt.isRunning ? "运行中" : "已安装 · 未运行") : model.chatGPTNeedsUpdate ? "需要更新" : "未安装",
                 issue: .chatGPT(requiresUpdate: model.chatGPTNeedsUpdate)
             )
             statusRow(
@@ -119,7 +126,7 @@ struct ContentView: View {
                 Button {
                     Task { await model.launchChatGPT() }
                 } label: {
-                    Label("启动 ChatGPT", systemImage: "play.fill")
+                    Label(model.gpt.isRunning ? "重启 ChatGPT" : "启动 ChatGPT", systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -135,13 +142,13 @@ struct ContentView: View {
             }
 
             HStack {
-                if !model.dns.status.isEnabled {
+                if !model.dns.status.isEnabled || model.protectionPaused {
                     Button("启用 DNS / IPv4 保护") {
                         Task { await model.enableDNSProtection() }
                     }
                     .disabled(model.isBusy)
                 }
-                Button("恢复原 DNS") { Task { await model.restoreDNSProtection() } }.disabled(model.isBusy)
+                Button("暂停保护并恢复原 DNS") { Task { await model.restoreDNSProtection() } }.disabled(model.isBusy)
                 Button("首次配置") {
                     model.showingSetup = true
                 }
@@ -226,6 +233,7 @@ struct ContentView: View {
 
     private var statusColor: Color {
         switch model.phase {
+        case .waiting, .paused: .orange
         case .ready:
             .green
         case .failed:

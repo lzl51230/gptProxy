@@ -47,8 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, let port = UInt16(exactly: self.model.proxyPort), port > 0 else { return }
-                self.model.monitor.start(port: port)
+                guard let self else { return }
+                self.model.resumeAfterWake()
             }
         }
         if LoginLaunchContext.isLoginLaunch(NSAppleEventManager.shared().currentAppleEvent) {

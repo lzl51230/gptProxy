@@ -83,6 +83,9 @@ public struct DNSProtectionStatus: Codable, Equatable, Sendable {
     public var phase: Phase
     public var detail: String
     public var version: String = DNSProtectionConfiguration.version
+    public var lastStopReason: String?
+    public var lastStopAt: String?
+    public var recoveryResult: String?
     public var isEnabled: Bool { phase == .enabled }
     public init(phase: Phase, detail: String) { self.phase = phase; self.detail = detail }
 }

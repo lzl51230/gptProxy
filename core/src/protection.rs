@@ -10,6 +10,8 @@ pub struct Protection {
     sequence: u64,
     phase: String,
     errors: Vec<String>,
+    last_stop_reason: Option<String>,
+    stop_sequence: u64,
     last_heartbeat: f64,
     verify_failures: u32,
     last_verify: f64,
@@ -62,6 +64,11 @@ impl Protection {
                         || now(r)? - self.last_heartbeat >= 8.
                         || r["ownerAlive"] != true
                     {
+                        if self.phase == "enabled" {
+                            self.record_stop(if r["ownerAlive"] != true {
+                                "启动器已退出".into()
+                            } else { "启动器心跳超时".into() });
+                        }
                         self.errors.clear();
                         self.restore();
                     } else if now(r)? - self.last_verify >= 5. {
@@ -88,16 +95,19 @@ impl Protection {
                     if op == "verify" && self.phase == "enabled" && !self.restoring {
                         self.verify_failures += 1;
                         if self.verify_failures >= 2 {
+                            self.record_stop(format!("{op}: {error}"));
                             self.errors.push(format!("{op}: {error}"));
                             self.restore();
                         }
                     } else {
+                        if !self.restoring { self.record_stop(format!("{op}: {error}")); }
                         self.errors.push(format!("{op}: {error}"));
                         if !self.restoring {
                             self.restore();
                         }
                     }
                 } else if let Err(error) = self.completed(&op, &r["value"]) {
+                    if !self.restoring { self.record_stop(error.clone()); }
                     self.errors.push(error);
                     if !self.restoring {
                         self.restore();
@@ -127,8 +137,12 @@ impl Protection {
             }
         }
         Ok(
-            json!({"phase":self.phase,"errors":self.errors,"effect":self.pending,"done":self.pending.is_none(),"hasJournal":!self.journal.is_null()}),
+            json!({"phase":self.phase,"errors":self.errors,"effect":self.pending,"done":self.pending.is_none(),"hasJournal":!self.journal.is_null(),"lastStopReason":self.last_stop_reason,"stopSequence":self.stop_sequence}),
         )
+    }
+    fn record_stop(&mut self, reason: String) {
+        self.last_stop_reason = Some(reason);
+        self.stop_sequence = self.stop_sequence.saturating_add(1);
     }
     fn restore(&mut self) {
         self.queue.clear();
@@ -261,6 +275,37 @@ fn now(r: &Value) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn slow_activation_starts_a_fresh_owner_lease() {
+        let (mut p, mut state) = prepared();
+        while state["done"] != true {
+            state = p.dispatch(&json!({"action":"complete","id":state["effect"]["id"],"now":30,"value":null})).unwrap();
+        }
+        state = p.dispatch(&json!({"action":"watchdog","now":31,"ownerAlive":true})).unwrap();
+        assert_eq!(state["phase"], "enabled");
+        assert_eq!(state["done"], true);
+        state = p.dispatch(&json!({"action":"watchdog","now":38,"ownerAlive":true})).unwrap();
+        assert_eq!(state["phase"], "restoring");
+        assert_eq!(state["lastStopReason"], "启动器心跳超时");
+    }
+
+    #[test]
+    fn automatic_restore_keeps_the_trigger_after_recovery_succeeds() {
+        let (mut p, mut state) = prepared();
+        while state["done"] != true { state = complete(&mut p, &state); }
+        for time in [7, 12] {
+            p.dispatch(&json!({"action":"heartbeat","now":time})).unwrap();
+            state = p.dispatch(&json!({"action":"watchdog","now":time,"ownerAlive":true})).unwrap();
+            state = p.dispatch(&json!({"action":"complete","id":state["effect"]["id"],"error":"DNS probe timed out"})).unwrap();
+            while state["done"] != true { state = complete(&mut p, &state); }
+        }
+        state = p.dispatch(&json!({"action":"watchdog","now":13,"ownerAlive":true})).unwrap();
+        while state["done"] != true { state = complete(&mut p, &state); }
+        assert_eq!(state["phase"], "disabled");
+        assert_eq!(state["errors"], json!([]));
+        assert_eq!(state["lastStopReason"], "verify: DNS probe timed out");
+    }
+
     #[test]
     fn bootstrap_repair_is_applied_only_to_the_temporary_configuration() {
         let mut p = Protection::default();

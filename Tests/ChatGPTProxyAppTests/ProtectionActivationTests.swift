@@ -47,13 +47,13 @@ final class ProtectionActivationTests: XCTestCase {
         }
     }
 
-    func testRestartsExistingGPTOnlyAfterProtectionAndDoesNotStartAnAbsentApp() async throws {
+    func testNetworkProtectionNeverRestartsAnExistingGPTOrStartsAnAbsentApp() async throws {
         for running in [true, false] {
             var events: [String] = []
             try await ProtectionActivation.run(launchGPT: false, isGPTRunning: { running },
                 enable: { events.append("protect") }, restartGPT: { events.append("restart") },
                 restore: { events.append("restore") }, checkCancellation: {})
-            XCTAssertEqual(events, running ? ["protect", "restart"] : ["protect"])
+            XCTAssertEqual(events, ["protect"])
         }
     }
 
@@ -68,7 +68,7 @@ final class ProtectionActivationTests: XCTestCase {
     func testRestartFailureRestoresPolicyInsteadOfCompletingActivation() async {
         var events: [String] = []
         do {
-            try await ProtectionActivation.run(launchGPT: false, isGPTRunning: { true },
+            try await ProtectionActivation.run(launchGPT: true, isGPTRunning: { true },
                 enable: { events.append("protect") },
                 restartGPT: { events.append("restart"); throw Failure.expected },
                 restore: { events.append("restore") }, checkCancellation: {})

@@ -55,7 +55,7 @@ public enum DNSProtectionIPC {
             let fd = socket(AF_UNIX, SOCK_STREAM, 0)
             guard fd >= 0 else { throw MonitorError.message("无法连接 DNS 辅助服务") }
             defer { close(fd) }
-            configure(fd)
+            configure(fd, seconds: request.command == .heartbeat || request.command == .status ? 2 : 45)
             var address = try address(DNSProtectionConfiguration.socketPath)
             let connected = withUnsafePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }

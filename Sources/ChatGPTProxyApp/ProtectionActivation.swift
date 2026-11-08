@@ -1,13 +1,12 @@
 import Foundation
 import ChatGPTProxyCore
 
-/// One transaction owns both the network policy and the application's old connections.
 @MainActor
 enum ProtectionActivation {
     static func run(launchGPT: Bool, isGPTRunning: () -> Bool,
                     enable: () async throws -> Void, restartGPT: () async throws -> Void,
                     restore: () async throws -> Void, checkCancellation: () throws -> Void) async throws {
-        let restart = launchGPT || isGPTRunning()
+        let restart = launchGPT
         do {
             try checkCancellation()
             try await enable()

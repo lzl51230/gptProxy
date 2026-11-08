@@ -30,7 +30,7 @@ macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Ru
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.3-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.4-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 
@@ -38,7 +38,7 @@ make verify
 
 ## 系统 DNS 保护
 
-点击“启动 ChatGPT”时先启用 DNS / IPv4 保护，也可在主窗口单独启用。单独启用时自动重启已经打开的 GPT，使旧连接采用新策略；GPT 未运行时不额外启动。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。2.3.3 使用辅助服务协议 3，首次启用会先恢复旧事务再升级服务。
+ChatGPT Proxy 驻留期间自动维护 DNS / IPv4 保护，无论 GPT 是否运行。后台恢复和单独启用只重建网络连接，不重启 GPT；只有明确点击“重启 ChatGPT”才会退出并重新打开客户端。主窗口通过进程扫描、应用通知和每 2 秒复核持续显示 GPT 是否运行，关闭 GPT 窗口不会被当作进程退出。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。2.3.3 使用辅助服务协议 3，首次启用会先恢复旧事务再升级服务。
 
 如果 GPT 未在正常退出请求后 15 秒内结束，或重新打开失败，会恢复网络设置并显示错误，不强制终止 GPT。等待过程中可取消。此时请手动退出 GPT 后重试。
 
@@ -46,17 +46,17 @@ make verify
 
 仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。普通系统解析经 `127.0.0.1/::1:53` 转入 Clash 的 `127.0.0.1:17853`，再通过当前 `GLOBAL` 节点请求 Cloudflare 和 Google DoH。GPT 通过 SOCKS5 提交的域名也使用该配置。临时采用 `redir-host` 返回真实地址。
 
-主窗口的「Clash DNS」会在启动前检查引导和节点解析配置。两组 DNS 都须独立使用 DoH 或 DoT，引导服务器须使用 IPv4 字面地址。如果显示「正在使用明文 DNS」，点击右侧「修复」。启动器会记住选择，优先使用 Clash Party 已保存的合格加密解析地址，缺少时使用内置 IPv4 DoH。点击「启动 ChatGPT」或「启用 DNS / IPv4 保护」后才应用临时配置，关闭保护时恢复。订阅文件和 Clash Party 的「DNS 覆写」开关保持原值。
+主窗口的「Clash DNS」会在启动前检查引导和节点解析配置。两组 DNS 都须独立使用 DoH 或 DoT，引导服务器须使用 IPv4 字面地址。如果显示「正在使用明文 DNS」，点击右侧「修复」。启动器会记住选择，优先使用 Clash Party 已保存的合格加密解析地址，缺少时使用内置 IPv4 DoH。驻留维护或手动启用保护时应用临时配置，暂停或退出时恢复。订阅文件和 Clash Party 的「DNS 覆写」开关保持原值。
 
-保护期间，当前共用 Clash 实例的顶层 `ipv6` 和 `dns.ipv6` 均临时关闭，普通节点及 provider 覆盖使用 `ip-version: ipv4`。同时使用该实例的其他应用也受影响，启用时会断开现有 Clash 连接一次，让它们按新策略重建。IPv4 解析和 AAAA 空响应检查通过，并完成所需 GPT 重启后，窗口才显示保护成功。节点无可用 IPv4 或启用失败时恢复原设置，不回退 IPv6 或直连。
+保护期间，当前共用 Clash 实例的顶层 `ipv6` 和 `dns.ipv6` 均临时关闭，普通节点及 provider 覆盖使用 `ip-version: ipv4`。同时使用该实例的其他应用也受影响，启用时会断开现有 Clash 连接一次，让它们按新策略重建。IPv4 解析、AAAA 空响应及保护链路检查通过后，窗口才显示保护成功；自动恢复不重启 GPT。节点无可用 IPv4 或启用失败时恢复原设置，不回退 IPv6 或直连。
 
 此策略限制本机到节点的地址族，不控制远端节点到网站的地址族。GPT 原生 IPv6 TCP 被阻断；UDP 全部经代理，节点连接使用 IPv4。ProxyBridge 4.1.1 对 UDP 只按进程匹配，不能用 IPv6 `BOTH + BLOCK` 规则，否则会误封 IPv4 UDP 和语音流量。macOS 的 IPv6 及 `::1` 本地 DNS 服务保留。
 
 保护期间，所有已启用物理网络服务的 DNS 指向本地服务；PF 专用 anchor 阻断非环回接口上的 IPv4/IPv6 TCP/UDP 53，并精确清理既有 DNS 状态。其他 PF 规则、mDNS、其他端口保持原样。应用自带 DoH/DoT 不属于明文 53 阻断范围；检测到 VPN 或其他系统 DNS 覆盖时停止保护。
 
-辅助服务独立于窗口进程检查链路、IPv4 策略、网络服务和节点变化。连续两次检查失败、Clash 配置重新加载、启动器失去响应或退出时，自动还原 DNS、Clash 配置和自身 PF 规则；恢复时保留用户随后手动修改的 DNS、节点和模式，并还原本次临时覆盖的 IPv6 开关。用户主动开启 IPv6 或加载新配置时保留其选择。主窗口显示“保护已关闭”，不自动重新开启。恢复后系统可以使用原 DNS 和 IPv6，届时不保证受保护。
+辅助服务独立于窗口进程检查链路、IPv4 策略、网络服务和节点变化。连续两次检查失败、Clash 配置重新加载、启动器失去响应或退出时，自动还原 DNS、Clash 配置和自身 PF 规则；恢复时保留用户随后手动修改的 DNS、节点和模式，并还原本次临时覆盖的 IPv6 开关。恢复时保留用户主动开启 IPv6 或加载的新配置；后续自动重新保护仍会临时应用 IPv4 策略，若需保留未保护状态应主动暂停保护。恢复后优先使用原 DNS 和 IPv6 保持联网，此时不保证受保护。只要启动器仍驻留且没有主动暂停，就按 2、5、10、30、60 秒封顶退避重试；连续两次前置检查成功后重新开启。心跳在独立后台任务中每 2 秒发送，不受界面或节点监控暂停影响。“暂停保护并恢复原 DNS”会保存暂停选择，直到主动启用。缺少辅助服务授权或网络扩展批准时显示具体待办，不反复弹出授权窗口。
 
-恢复记录位于 `/Library/Application Support/ChatGPT Proxy DNS/recovery-v3.json`（升级时仍读取旧版 `recovery.json`），仅 root 可读，可能包含原 Clash 配置。正常恢复成功后删除；崩溃或重启后优先恢复未完成的事务。辅助服务只接受安装用户或 root 的固定控制命令，不记录查询域名及订阅凭据。
+恢复记录位于 `/Library/Application Support/ChatGPT Proxy DNS/recovery-v3.json`（升级时仍读取旧版 `recovery.json`），仅 root 可读，可能包含原 Clash 配置。正常恢复成功后删除；崩溃或重启后优先恢复未完成的事务。辅助服务只接受安装用户或 root 的固定控制命令，不记录查询域名及订阅凭据。协议 3 状态新增可选的停保原因、时间及恢复结果，旧客户端仍可读取；停保原因不会因成功恢复而丢失。启动器的 `~/Library/Logs/ChatGPT Proxy/protection.jsonl` 记录状态转换并按 5 MB 轮转，`runtime-status.json` 保存最近一次状态快照。
 
 应用无法打开时，可在终端恢复：
 

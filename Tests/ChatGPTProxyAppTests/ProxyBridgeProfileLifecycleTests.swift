@@ -9,6 +9,24 @@ final class ProfileConfigurationModelTests: XCTestCase {
         var errorDescription: String? { "profile setup failed" }
     }
 
+    func testFailedLaunchPreservesPausedProtectionUntilAnExplicitLaunchSucceeds() async throws {
+        let id = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: id))
+        defer { defaults.removePersistentDomain(forName: id) }
+        defaults.set(true, forKey: "dnsProtectionPaused")
+        let failed = AppModel(profileConfigurator: {}, defaults: defaults,
+                              protectedLauncher: { throw TestError.expected })
+        await failed.launchChatGPT()
+        XCTAssertEqual(failed.phase, .failed(TestError.expected.localizedDescription))
+        XCTAssertTrue(failed.protectionPaused)
+        XCTAssertTrue(defaults.bool(forKey: "dnsProtectionPaused"))
+        let succeeded = AppModel(profileConfigurator: {}, defaults: defaults, protectedLauncher: {})
+        XCTAssertTrue(succeeded.protectionPaused)
+        await succeeded.launchChatGPT()
+        XCTAssertFalse(succeeded.protectionPaused)
+        XCTAssertFalse(defaults.bool(forKey: "dnsProtectionPaused"))
+    }
+
     func testSuccessfulProfileConfigurationDoesNotClaimReadyBeforeDNSProtection() async {
         var refreshed = false
         let model = AppModel(

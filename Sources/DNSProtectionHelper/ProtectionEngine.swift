@@ -15,6 +15,8 @@ actor ProtectionEngine {
     private var request: DNSProtectionRequest?
     private var peerPID: Int32 = 0
     private var busy = false
+    private var stopSequence = 0
+    private var lastStopAt: String?
     private var selectionSignature: [String:String] = [:]
     private(set) var status = DNSProtectionStatus(phase: .disabled, detail: "DNS 保护已关闭")
     init(ownerUID: uid_t) throws {
@@ -83,7 +85,24 @@ actor ProtectionEngine {
         let phase = DNSProtectionStatus.Phase(rawValue: result["phase"] as? String ?? "failed") ?? .failed
         let errors = result["errors"] as? [String] ?? []
         let detail = errors.isEmpty ? (phase == .enabled ? "DNS 已保护 · 本机代理使用 IPv4；明文 DNS 已阻断" : "DNS 保护已关闭，原配置已恢复") : errors.joined(separator: "；")
-        status = .init(phase: phase, detail: detail)
+        let sequence = result["stopSequence"] as? Int ?? 0
+        if sequence != stopSequence {
+            stopSequence = sequence
+            lastStopAt = ISO8601DateFormatter().string(from: Date())
+        }
+        var next = DNSProtectionStatus(phase: phase, detail: detail)
+        next.lastStopReason = result["lastStopReason"] as? String
+        next.lastStopAt = lastStopAt
+        next.recoveryResult = phase == .disabled ? "restored" : phase == .failed ? "incomplete" : nil
+        if next != status {
+            let event = ["time": ISO8601DateFormatter().string(from: Date()),
+                         "phase": phase.rawValue, "stopSequence": String(sequence),
+                         "recovery": next.recoveryResult ?? "none"]
+            if let data = try? JSONSerialization.data(withJSONObject: event) {
+                print(String(decoding: data, as: UTF8.self)); fflush(stdout)
+            }
+        }
+        status = next
         if phase == .failed { throw MonitorError.message(detail) }
     }
     private func persist(_ value: [String:Any]) throws {
