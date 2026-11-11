@@ -27,6 +27,15 @@ pub fn resolve(request: &Value) -> Result<Value, String> {
     );
     let mut hash = Sha256::new();
     let profiles = load(directory, "profile.yaml", &mut hash)?;
+    let active_profile = profiles["current"].as_str().filter(|id| {
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            && profiles["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|p| p["id"].as_str() == Some(*id)))
+    });
     let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut identities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for profile in profiles["items"].as_array().into_iter().flatten() {
@@ -72,5 +81,7 @@ pub fn resolve(request: &Value) -> Result<Value, String> {
             origins.remove(name);
         }
     }
-    Ok(json!({"origins":origins,"signature":hash.finalize().to_vec()}))
+    Ok(
+        json!({"activeProfileId":active_profile,"origins":origins,"signature":hash.finalize().to_vec()}),
+    )
 }

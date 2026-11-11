@@ -113,7 +113,7 @@ public final class AutoSwitchMonitor: ObservableObject {
         guard let current = snapshot.current else { throw MonitorError.message("无法解析当前节点") }
         let proxies = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot.proxies))
         return try policyCore.call(["op":"monitorCandidates", "current":current, "origins":resolver.origins,
-                                    "names":snapshot.proxies["GLOBAL"]?.all ?? [], "proxies":proxies])
+                                    "activeProfileId":resolver.activeProfileId as Any? ?? NSNull(), "names":snapshot.proxies["GLOBAL"]?.all ?? [], "proxies":proxies])
     }
 
     private func updateRegionCatalog(_ candidates: [String: [String]]) {
@@ -267,7 +267,7 @@ public final class AutoSwitchMonitor: ObservableObject {
                     "current":snapshot.current as Any? ?? NSNull(), "selection":snapshot.selectionSignature,
                     "proxies":try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot.proxies)),
                     "signature":resolver.map { Array($0.signature) } as Any? ?? NSNull(),
-                    "origins":resolver?.origins ?? [:]] as [String:Any]
+                    "activeProfileId":resolver?.activeProfileId as Any? ?? NSNull(), "origins":resolver?.origins ?? [:]] as [String:Any]
         case "heartbeat":
             if connection == nil { connection = operations.makeConnection(port) }
             let result = try await connection!.heartbeat()

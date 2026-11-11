@@ -176,16 +176,19 @@ public struct ClashControllerClient: Sendable {
 
 public struct NodeOriginResolver: Sendable {
     public let origins: [String: String]
+    public let activeProfileId: String?
     public let signature: Data
 
     public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/mihomo-party")) throws {
-        struct Result: Decodable { let origins: [String:String]; let signature: [UInt8] }
+        struct Result: Decodable { let activeProfileId: String?; let origins: [String:String]; let signature: [UInt8] }
         let result: Result = try RustCore().call(["op":"nodeOrigins", "directory":directory.path])
+        activeProfileId = result.activeProfileId
         origins = result.origins
         signature = Data(result.signature)
     }
 
-    init(origins: [String: String]) {
+    init(origins: [String: String], activeProfileId: String? = nil) {
+        self.activeProfileId = activeProfileId
         self.origins = origins
         self.signature = Data()
     }

@@ -47,6 +47,19 @@ public class SharedMonitorTests
         Assert.False(core.Call(new { op="monitor", action="accept" }).GetProperty("recovery").GetBoolean());
     }
     [Fact]
+    public void DirectCandidatesUseActiveProfile()
+    {
+        using var core = new NativeCore();
+        var result=core.Call(new { op="monitorCandidates", current="DIRECT", activeProfileId="one",
+            origins=new Dictionary<string,string>{{"日本 A","one"},{"美国 B","two"}},
+            names=new[]{"DIRECT","日本 A","美国 B"},
+            proxies=new Dictionary<string,object>{{"GLOBAL",new { now="DIRECT" }},{"DIRECT",new { type="Direct" }},
+                {"日本 A",new { type="ss" }},{"美国 B",new { type="ss" }}} });
+        Assert.Equal("日本 A",result.GetProperty("JP")[0].GetString());
+        Assert.False(result.TryGetProperty("US",out _));
+    }
+
+    [Fact]
     public void CandidatesRemainInsideCurrentSubscription()
     {
         using var core = new NativeCore();

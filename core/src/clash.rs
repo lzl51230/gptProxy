@@ -14,6 +14,12 @@ fn encoded(value: &str) -> String {
         })
         .collect()
 }
+/// Only a direct GLOBAL selection opts into immediate recovery.
+pub fn global_selects_direct(proxies: &Value) -> bool {
+    proxies["GLOBAL"]["now"]
+        .as_str()
+        .is_some_and(|n| n.eq_ignore_ascii_case("DIRECT"))
+}
 pub fn dispatch(r: &Value) -> Result<Value, String> {
     match r["op"].as_str().unwrap_or("") {
         "clashSnapshot" => {
@@ -142,6 +148,21 @@ pub fn dispatch(r: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_literal_global_direct_selection_triggers() {
+        for name in ["DIRECT", "direct", "DiReCt"] {
+            assert!(global_selects_direct(&json!({"GLOBAL":{"now":name}})));
+        }
+        for proxies in [
+            json!({}),
+            json!({"GLOBAL":{"now":"group"},"group":{"now":"DIRECT","all":["DIRECT"]}}),
+            json!({"GLOBAL":{"now":"自定义直连"},"自定义直连":{"type":"Direct"}}),
+            json!({"GLOBAL":{"now":"DIRECT-US"}}),
+        ] {
+            assert!(!global_selects_direct(&proxies));
+        }
+    }
+
     #[test]
     fn restoring_selection_waits_for_provider_nodes_after_reload() {
         let selection = json!({"GLOBAL":"provider-node"});

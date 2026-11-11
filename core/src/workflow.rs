@@ -28,6 +28,7 @@ struct Model {
     last_switch: String,
     delay: f64,
     recovery: bool,
+    direct_recovery: bool,
     failed_node: String,
     round: u64,
     attempt: u32,
@@ -50,6 +51,7 @@ impl Default for Model {
             last_switch: "尚未切换".into(),
             delay: 2.,
             recovery: false,
+            direct_recovery: false,
             failed_node: String::new(),
             round: 0,
             attempt: 0,
@@ -259,7 +261,7 @@ impl Driver {
     async fn observe(&self) -> Result<(), String> {
         let snapshot = self.snapshot().await.unwrap_or(Value::Null);
         if let Ok(catalog) = crate::monitor::candidates(
-            &json!({"current":snapshot["current"],"origins":snapshot["origins"],"names":snapshot["proxies"]["GLOBAL"]["all"],"proxies":snapshot["proxies"]}),
+            &json!({"activeProfileId":snapshot["activeProfileId"],"current":snapshot["current"],"origins":snapshot["origins"],"names":snapshot["proxies"]["GLOBAL"]["all"],"proxies":snapshot["proxies"]}),
         ) {
             self.change(|m| m.candidates = catalog);
         }
@@ -277,6 +279,23 @@ impl Driver {
                 m.recovery = false;
             }
         });
+        if !self.state().recovery
+            && snapshot["mode"] == "global"
+            && !snapshot["signature"].is_null()
+            && crate::clash::global_selects_direct(&snapshot["proxies"])
+        {
+            self.close().await?;
+            self.change(|m| {
+                m.recovery = true;
+                m.direct_recovery = true;
+                m.failed_node = m.node.clone();
+                m.round = 0;
+                m.attempt = 0;
+                m.age = 0.;
+                m.latency = Value::Null;
+                m.phase("testing", "GLOBAL 选中 DIRECT，开始自动选择代理节点");
+            });
+        }
         if !self.state().recovery {
             let h = self.heartbeat(&snapshot).await?;
             let healthy = h["isHealthy"] == true;
@@ -349,7 +368,7 @@ impl Driver {
             .ok_or("无法解析当前节点")?
             .to_owned();
         let candidates = match crate::monitor::candidates(
-            &json!({"current":current,"origins":original["origins"],"names":original["proxies"]["GLOBAL"]["all"],"proxies":original["proxies"]}),
+            &json!({"activeProfileId":original["activeProfileId"],"current":current,"origins":original["origins"],"names":original["proxies"]["GLOBAL"]["all"],"proxies":original["proxies"]}),
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -361,8 +380,11 @@ impl Driver {
             m.candidates = candidates.clone();
             m.round = m.round.saturating_add(1);
         });
-        let region = crate::policy::region(&current).ok_or("节点地区不明确")?;
-        let mut order = vec![region.clone()];
+        let mut order = if self.state().direct_recovery {
+            Vec::new()
+        } else {
+            vec![crate::policy::region(&current).ok_or("节点地区不明确")?]
+        };
         if let Some(preferences) = self.regions.as_array() {
             for p in preferences {
                 if p["isEnabled"] == true {
@@ -373,6 +395,13 @@ impl Driver {
                     }
                 }
             }
+        }
+        if order.is_empty() {
+            self.change(|m| {
+                m.phase("retrying", "请先在设置中勾选自动切换地区");
+                m.recovery = false;
+            });
+            return Ok(());
         }
         let mut expected = original;
         for region in order {
@@ -433,6 +462,7 @@ impl Driver {
                         || confirmed["proxies"]["GLOBAL"]["all"]
                             != before["proxies"]["GLOBAL"]["all"]
                         || confirmed["signature"] != before["signature"]
+                        || confirmed["activeProfileId"] != before["activeProfileId"]
                         || confirmed["current"] != candidate
                     {
                         return Err("节点或配置已变化，重新建立 Codex 长连接".into());
@@ -466,6 +496,7 @@ impl Driver {
                         self.change(|m| {
                             m.failures = 0;
                             m.recovery = false;
+                            m.direct_recovery = false;
                             m.round = 0;
                             m.attempt = 0;
                             m.retry = Value::Null;
@@ -487,12 +518,40 @@ fn context(s: &Value) -> Value {
     if s.is_null() {
         Value::Null
     } else {
-        json!({"socket":s["socket"],"mode":s["mode"],"selection":s["selection"],"nodes":s["proxies"]["GLOBAL"]["all"],"signature":s["signature"]})
+        json!({"socket":s["socket"],"mode":s["mode"],"selection":s["selection"],"nodes":s["proxies"]["GLOBAL"]["all"],"signature":s["signature"],"activeProfileId":s["activeProfileId"]})
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direct_workflow_tests_candidates_before_any_heartbeat() {
+        let mut w = Workflow::default();
+        let snapshot = json!({"mode":"global","socket":"fixture","current":"DIRECT",
+            "signature":[],"activeProfileId":"one","selection":{"GLOBAL":"DIRECT"},
+            "origins":{"日本 A":"one"},"proxies":{
+                "GLOBAL":{"now":"DIRECT","all":["DIRECT","日本 A"]},
+                "DIRECT":{"type":"Direct"},"日本 A":{"type":"ss"}}});
+        let mut response = w.dispatch(&json!({"action":"begin","now":0,
+            "regions":[{"code":"JP","isEnabled":true}]})).unwrap();
+        for _ in 0..10 {
+            let effect = &response["effect"];
+            let value = match effect["op"].as_str().unwrap() {
+                "snapshot" => snapshot.clone(),
+                "closeConnection" => Value::Null,
+                "delays" => {
+                    assert_eq!(effect["args"]["names"], json!(["日本 A"]));
+                    assert_eq!(response["state"]["consecutiveFailures"], 0);
+                    return;
+                }
+                other => panic!("Unexpected effect before candidate testing: {other}"),
+            };
+            response = w.dispatch(&json!({"action":"complete","now":0,
+                "id":effect["id"],"value":value})).unwrap();
+        }
+        panic!("DIRECT did not start testing in the first tick");
+    }
+
     #[test]
     fn stale_effect_cannot_complete_new_generation() {
         let mut w = Workflow::default();

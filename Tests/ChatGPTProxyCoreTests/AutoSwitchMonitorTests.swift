@@ -12,6 +12,7 @@ private actor MonitorFixture {
     var selected: [String] = []
     var closed: [String] = []
     var heartbeatCount = 0
+    var heartbeatNodes: [String] = []
     var writes: [ContinuousClock.Instant] = []
     var manualChange = false
     var selectionFails = false
@@ -22,7 +23,8 @@ private actor MonitorFixture {
         snapshots += 1
         if manualChange && snapshots > 1 { current = "日本另一订阅" }
         let data = try JSONSerialization.data(withJSONObject: [
-            "GLOBAL": ["name": "GLOBAL", "type": "Selector", "now": current, "all": Array(delays.keys).sorted()],
+            "DIRECT": ["name": "DIRECT", "type": "Direct"],
+            "GLOBAL": ["name": "GLOBAL", "type": "Selector", "now": current, "all": Array(delays.keys).sorted() + ["DIRECT"]],
             "日本旧": ["name": "日本旧", "type": "Shadowsocks"],
             "日本快": ["name": "日本快", "type": "Shadowsocks"],
             "日本另一订阅": ["name": "日本另一订阅", "type": "Shadowsocks"],
@@ -32,6 +34,7 @@ private actor MonitorFixture {
     }
     func heartbeat(age: Double = 0) -> Bool {
         heartbeatCount += 1
+        heartbeatNodes.append(current)
         if failures > 0 { failures -= 1; return false }
         return !failNodes.contains(current) && age < (failAfter[current] ?? .infinity)
     }
@@ -68,11 +71,70 @@ final class AutoSwitchMonitorTests: XCTestCase {
         return AutoSwitchMonitor(operations: .init(
             snapshot: { _ in try await fixture.snapshot() },
             makeConnection: { _ in TestCodexConnection(clock: clock) { age in await fixture.heartbeat(age: age) } },
-            resolver: { NodeOriginResolver(origins: ["日本旧": "one", "日本快": "one", "香港快": "one", "日本另一订阅": "two"]) },
+            resolver: { NodeOriginResolver(origins: ["日本旧": "one", "日本快": "one", "香港快": "one", "日本另一订阅": "two"], activeProfileId: "one") },
             delay: { _, name in await fixture.delay(name) }, select: { _, name in try await fixture.select(name, at: clock.now()) },
             connections: { _, _ in ["old-connection"] }, close: { _, id in await fixture.close(id) },
             now: { clock.now() }, sleep: sleep ?? { clock.advance($0) }
         ), defaults: defaults)
+    }
+
+    func testDirectImmediatelyRecoversWithoutObservingHealthyDirect() async {
+        let f = MonitorFixture(); await f.changeCurrent("DIRECT"); await f.configure(failures: 0)
+        let m = monitor(f); await m.refreshRegions()
+        XCTAssertEqual(m.regionNodeCounts["JP"], 2)
+        m.setRegionEnabled("HK", enabled: true)
+        await m.tick()
+        let tested = await f.tested, selected = await f.selected, nodes = await f.heartbeatNodes
+        XCTAssertEqual(tested, ["香港快"])
+        XCTAssertEqual(selected, ["香港快"])
+        XCTAssertFalse(nodes.contains("DIRECT"))
+        XCTAssertEqual(m.consecutiveFailures, 0)
+        XCTAssertEqual(m.connectionSeconds, 10)
+        XCTAssertEqual(m.phase, .maintaining)
+    }
+
+    func testDirectFailedCandidatesRespectCooldownAndTryEnabledBackup() async {
+        let f = MonitorFixture(); await f.changeCurrent("DIRECT"); await f.configure(failures: 0)
+        await f.fail("日本旧", after: 2); await f.fail("日本快", after: 2)
+        let m = monitor(f); await m.refreshRegions()
+        m.setRegionEnabled("JP", enabled: true); m.setRegionEnabled("HK", enabled: true)
+        m.moveRegion("JP", offset: -1)
+        await m.tick()
+        let selected = await f.selected, writes = await f.writes
+        XCTAssertEqual(selected, ["日本旧", "日本快", "香港快"])
+        for i in 1..<writes.count { XCTAssertGreaterThanOrEqual((writes[i] - writes[i-1]).seconds, 5) }
+        XCTAssertEqual(m.phase, .maintaining)
+    }
+
+    func testDirectWithoutEnabledRegionsPromptsWithoutTestsOrWrites() async {
+        let f = MonitorFixture(); await f.changeCurrent("DIRECT"); await f.configure(failures: 0)
+        let m = monitor(f); await m.tick()
+        XCTAssertTrue(m.status.contains("勾选"))
+        let tested = await f.tested, selected = await f.selected
+        XCTAssertTrue(tested.isEmpty); XCTAssertTrue(selected.isEmpty)
+    }
+
+    func testDirectAllSlowPreservesBackoffAcrossTicks() async {
+        let f = MonitorFixture(); await f.changeCurrent("DIRECT")
+        await f.configure(failures: 0, allSlow: true)
+        let m = monitor(f); await m.refreshRegions(); m.setRegionEnabled("JP", enabled: true)
+        await m.tick()
+        XCTAssertEqual(m.retrySeconds, 2)
+        await m.tick()
+        let first = await f.tested; XCTAssertEqual(first.count, 2)
+        clock.advance(.seconds(2)); await m.tick()
+        XCTAssertEqual(m.retrySeconds, 4)
+        let nodes = await f.heartbeatNodes; XCTAssertTrue(nodes.isEmpty)
+    }
+
+    func testRuleAndDirectModeDoNotImmediatelyRecoverDirect() async {
+        for mode in ["rule", "direct"] {
+            let f = MonitorFixture(); await f.changeCurrent("DIRECT"); await f.configure(failures: 0, mode: mode)
+            let m = monitor(f); await m.refreshRegions(); m.setRegionEnabled("JP", enabled: true)
+            await m.tick()
+            let tested = await f.tested; XCTAssertTrue(tested.isEmpty)
+            let nodes = await f.heartbeatNodes; XCTAssertEqual(nodes, ["DIRECT"])
+        }
     }
 
     func testTwoShortConnectionsRecoverWithinSubscriptionAndAcceptOnlyAtTenSeconds() async {
@@ -257,6 +319,7 @@ final class NodeOriginResolverTests: XCTestCase {
         try write("profiles/second.yaml", "\u{FEFF}proxies:\n  - {name: 日本01, type: ss, server: second.example, port: 443, password: example}\n")
         try write("work/config.yaml", "proxies:\n  - {name: 'renamed | 🇯🇵日本01', type: ss, server: first.example, port: 443, password: example}\n")
         let before = try NodeOriginResolver(directory: root)
+        XCTAssertEqual(before.activeProfileId, "second")
         XCTAssertEqual(before.origins["renamed | 🇯🇵日本01"], "first")
         XCTAssertNil(before.origins["日本01"], "Duplicate names cannot establish ownership")
         try write("work/config.yaml", "proxies:\n  - {name: 'renamed | 🇯🇵日本01', type: ss, server: unknown.example, port: 443, password: example}\n")

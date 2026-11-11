@@ -77,7 +77,7 @@ internal sealed class ClashAdapter : IDisposable
         var general=await Command("configs");var proxies=(await Command("proxies"))?["proxies"]?.DeepClone() ?? throw new IOException("Missing Clash proxies");
         var resolution=JsonNode.Parse(core.Call(new{op="clashSnapshot",proxies}).GetRawText())!;
         JsonNode? origins=null;try{origins=ProcessIdentity.AsProcessUser(Pid,()=>JsonNode.Parse(core.Call(new{op="nodeOrigins",directory=Root}).GetRawText()));}catch{}
-        return new JsonObject{["socket"]=Pipe,["mode"]=general?["mode"]?.DeepClone(),["current"]=resolution["current"]?.DeepClone(),["selection"]=resolution["selection"]!.DeepClone(),["proxies"]=proxies,["signature"]=origins?["signature"]?.DeepClone(),["origins"]=origins?["origins"]?.DeepClone()};
+        return new JsonObject{["socket"]=Pipe,["mode"]=general?["mode"]?.DeepClone(),["current"]=resolution["current"]?.DeepClone(),["selection"]=resolution["selection"]!.DeepClone(),["proxies"]=proxies,["signature"]=origins?["signature"]?.DeepClone(),["origins"]=origins?["origins"]?.DeepClone(),["activeProfileId"]=origins?["activeProfileId"]?.DeepClone()};
     }
     public async Task<JsonObject> Selections()
     {

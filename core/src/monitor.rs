@@ -64,13 +64,20 @@ pub fn candidates(request: &Value) -> Result<Value, String> {
     let origins = request["origins"]
         .as_object()
         .ok_or("Missing subscription origins")?;
-    let source = origins
-        .get(current)
-        .and_then(Value::as_str)
-        .ok_or("节点订阅或地区不明确，保持原节点")?;
-    if crate::policy::region(current).is_none() {
-        return Err("节点订阅或地区不明确，保持原节点".into());
-    }
+    let source = if crate::clash::global_selects_direct(&request["proxies"]) {
+        request["activeProfileId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("当前订阅不明确，无法从 DIRECT 自动切换")?
+    } else {
+        if crate::policy::region(current).is_none() {
+            return Err("节点订阅或地区不明确，保持原节点".into());
+        }
+        origins
+            .get(current)
+            .and_then(Value::as_str)
+            .ok_or("节点订阅或地区不明确，保持原节点")?
+    };
     let proxies = request["proxies"].as_object().ok_or("Missing proxies")?;
     let names = request["names"].as_array().ok_or("Missing GLOBAL nodes")?;
     let mut sorted = std::collections::BTreeSet::new();
@@ -108,6 +115,22 @@ mod tests {
     fn observe(m: &mut Monitor, healthy: bool, seconds: f64) -> Value {
         m.dispatch(&json!({"action":"observe","node":"Japan A","heartbeat":{"isHealthy":healthy,"connectionSeconds":seconds}})).unwrap()
     }
+    #[test]
+    fn direct_uses_active_profile_and_requires_explicit_ownership() {
+        let mut r = json!({"current":"DIRECT","activeProfileId":"one",
+            "origins":{"日本 A":"one","美国 B":"two","日本直连":"one","香港组":"one"},
+            "names":["DIRECT","日本 A","美国 B","未知","日本直连","香港组"],
+            "proxies":{"GLOBAL":{"now":"DIRECT"},"DIRECT":{"type":"Direct"},
+                "日本 A":{"type":"ss"},"美国 B":{"type":"ss"},"未知":{"type":"ss"},
+                "日本直连":{"type":"Direct"},"香港组":{"type":"Selector","all":[]}}});
+        assert_eq!(candidates(&r).unwrap(), json!({"JP":["日本 A"]}));
+        r["activeProfileId"] = Value::Null;
+        assert!(candidates(&r).is_err());
+        r["proxies"]["GLOBAL"]["now"] = json!("group");
+        r["activeProfileId"] = json!("one");
+        assert!(candidates(&r).is_err());
+    }
+
     #[test]
     fn only_two_short_failures_trigger_recovery_and_stability_resets() {
         let mut m = Monitor::default();
