@@ -26,7 +26,7 @@ actor ProtectionEngine {
         if FileManager.default.fileExists(atPath: stateURL.path) {
             var info = stat()
             guard lstat(stateURL.path, &info) == 0, info.st_uid == 0, info.st_mode & S_IFMT == S_IFREG,
-                  info.st_size <= 2 * DNSProtectionIPC.maximumMessageSize else { throw MonitorError.message("DNS 恢复文件身份验证失败") }
+                  info.st_size <= DNSProtectionConfiguration.maximumRecoverySize else { throw MonitorError.message("DNS 恢复文件身份验证失败") }
             journal = try JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as? [String:Any]
             guard journal != nil else { throw MonitorError.message("DNS 恢复记录无效，已保留") }
         }
@@ -107,7 +107,7 @@ actor ProtectionEngine {
     }
     private func persist(_ value: [String:Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: value)
-        guard data.count <= 2 * DNSProtectionIPC.maximumMessageSize else { throw MonitorError.message("DNS 恢复记录过大") }
+        guard data.count <= DNSProtectionConfiguration.maximumRecoverySize else { throw MonitorError.message("DNS 恢复记录过大") }
         try data.write(to: stateURL, options: .atomic)
         guard chmod(stateURL.path, 0o600) == 0 else { throw MonitorError.message("无法保护 DNS 恢复记录") }
         for path in [stateURL.path,stateURL.deletingLastPathComponent().path] { let fd = open(path,O_RDONLY); if fd >= 0 { _ = fsync(fd); close(fd) } }

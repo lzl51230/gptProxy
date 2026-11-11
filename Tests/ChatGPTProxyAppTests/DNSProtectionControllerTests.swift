@@ -47,6 +47,16 @@ final class DNSProtectionControllerTests: XCTestCase {
         semaphore.wait(timeout: .now() + 5)
     }
 
+    func testVersionThreeHelperRequiresUpdate() async {
+        let controller = DNSProtectionController(requestIPC: { _ in
+            var status = DNSProtectionStatus(phase: .enabled, detail: "protected")
+            status.version = "3"
+            return status
+        })
+        await controller.refresh()
+        XCTAssertFalse(controller.status.isEnabled)
+    }
+
     func testVersionThreeStatusStillDecodesWithoutDiagnosticFields() throws {
         let data = Data(#"{"phase":"disabled","detail":"restored","version":"3"}"#.utf8)
         let status = try JSONDecoder().decode(DNSProtectionStatus.self, from: data)

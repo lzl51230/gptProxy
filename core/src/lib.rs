@@ -21,7 +21,8 @@ use std::{
 };
 
 pub const ABI_VERSION: u32 = 1;
-const MAX_MESSAGE: usize = 4 * 1024 * 1024;
+// Includes JSON escaping, paired YAML inputs, and recovery journal envelopes.
+const MAX_MESSAGE: usize = 512 * 1024 * 1024;
 
 #[repr(C)]
 pub struct Buffer {
@@ -80,8 +81,11 @@ pub unsafe extern "C" fn cgp_core_call(
     len: usize,
 ) -> Buffer {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value, String> {
-        if engine.is_null() || input.is_null() || len > MAX_MESSAGE {
-            return Err("Invalid handle or message size".into());
+        if engine.is_null() || input.is_null() {
+            return Err("Invalid handle or input".into());
+        }
+        if len > MAX_MESSAGE {
+            return Err("Core request exceeds 512 MiB limit".into());
         }
         let bytes = unsafe { std::slice::from_raw_parts(input, len) };
         let request: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;

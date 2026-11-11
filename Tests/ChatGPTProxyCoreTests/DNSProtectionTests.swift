@@ -23,6 +23,59 @@ final class DNSProtectionTests: XCTestCase {
       fallback: [8.8.8.8]
     """
 
+    func testConfigurationSizeBoundary() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        // Sparse files exercise the byte boundary without committing a large fixture.
+        XCTAssertTrue(FileManager.default.createFile(atPath: file.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        for size in [10 * 1024 * 1024, 32 * 1024 * 1024] {
+            try handle.truncate(atOffset: UInt64(size))
+            XCTAssertNoThrow(try DNSProtectionConfiguration.sourceGeneration(at: file))
+            XCTAssertEqual(try DNSProtectionConfiguration.readSource(at: file).utf8.count, size)
+        }
+        XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: file, ownerUID: getuid() + 1))
+        try handle.truncate(atOffset: UInt64(32 * 1024 * 1024 + 1))
+        XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: file))
+        XCTAssertThrowsError(try DNSProtectionConfiguration.sourceGeneration(at: file)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("32 MiB"))
+        }
+    }
+
+    func testLargeConfigurationConversionAndRecoveryReload() throws {
+        let payload = String(repeating: "中文 \"quoted\" \\ path\n", count: 240_000)
+        let source = fixture + "\nx-payload: " + String(decoding: try JSONEncoder().encode(payload), as: UTF8.self) + "\n"
+        XCTAssertGreaterThan(source.utf8.count, 4 * 1024 * 1024)
+        let general = Data(#"{"ipv6":true}"#.utf8)
+        let runtime = try DNSProtectionConfiguration.runtimeYAML(source, general: general)
+        _ = try DNSProtectionConfiguration.inspectBootstrap(runtime, saved: source)
+        let protected = try DNSProtectionConfiguration.protectedYAML(runtime)
+        let parsed = try XCTUnwrap(Yams.load(yaml: protected) as? [String: Any])
+        XCTAssertEqual(parsed["x-payload"] as? String, payload)
+        let journal: [String: Any] = ["version": 1, "source": source, "originalYAML": runtime]
+        let bytes = try JSONSerialization.data(withJSONObject: journal)
+        XCTAssertGreaterThan(bytes.count, 8 * 1024 * 1024)
+        XCTAssertLessThan(bytes.count, DNSProtectionConfiguration.maximumRecoverySize)
+        let decoded = try JSONSerialization.jsonObject(with: bytes)
+        let result = try RustCore().object(["op": "protection", "action": "load", "journal": decoded])
+        XCTAssertEqual((result as? [String: Any])?["phase"] as? String, "restoring")
+        let restored = try DNSProtectionConfiguration.restoredYAML(runtime, general: general,
+            originalIPv6: true, ipv4PolicyApplied: true, sourceChanged: false)
+        XCTAssertEqual((try Yams.load(yaml: restored) as? [String: Any])?["x-payload"] as? String, payload)
+    }
+
+    func testSourceRejectsDirectoryMissingFileAndInvalidUTF8() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: directory))
+        let file = directory.appendingPathComponent("config.yaml")
+        XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: file))
+        try Data([0xff]).write(to: file)
+        XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: file))
+    }
+
     func testEveryOrdinaryResolutionPathUsesGlobalDoHWithoutChangingNodesOrRules() throws {
         let original = try XCTUnwrap(Yams.load(yaml: fixture) as? [String: Any])
         let result = try XCTUnwrap(Yams.load(yaml: DNSProtectionConfiguration.protectedYAML(fixture)) as? [String: Any])
@@ -173,20 +226,28 @@ final class DNSProtectionTests: XCTestCase {
         XCTAssertFalse(DNSPacket.isValidResponse(Data([1, 2]), to: query))
     }
 
+    func testIPCOversizedMessageIsRejectedBeforeWriting() throws {
+        let payload = String(repeating: "x", count: DNSProtectionIPC.maximumMessageSize)
+        XCTAssertThrowsError(try DNSProtectionIPC.send(payload, descriptor: -1)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("128 MiB"))
+        }
+    }
+
     func testIPCFramingAndLargeConfigurationPayload() throws {
         var descriptors: [Int32] = [0, 0]
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
         defer { descriptors.forEach { close($0) } }
         let read = descriptors[0], write = descriptors[1]
         let sent = expectation(description: "request sent")
-        let payload = String(repeating: "configuration", count: 20_000)
+        let payload = String(repeating: "中文 \"quoted\" \\ path\n", count: 300_000)
         DispatchQueue.global().async {
             defer { sent.fulfill() }
-            try? DNSProtectionIPC.send(DNSProtectionRequest(command: .enable, yaml: payload), descriptor: write)
+            do { try DNSProtectionIPC.send(DNSProtectionRequest(command: .enable, yaml: payload), descriptor: write) }
+            catch { XCTFail("IPC send failed: \(error)"); shutdown(write, SHUT_WR) }
         }
         let request = try DNSProtectionIPC.receive(DNSProtectionRequest.self, descriptor: read)
         XCTAssertEqual(request.yaml, payload)
-        wait(for: [sent], timeout: 2)
+        wait(for: [sent], timeout: 10)
     }
 
     func testGenerationRejectsSymlinkAndDetectsSameSizeRewrite() throws {
@@ -200,6 +261,7 @@ final class DNSProtectionTests: XCTestCase {
         XCTAssertNotEqual(before, try DNSProtectionConfiguration.sourceGeneration(at: file))
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
         XCTAssertThrowsError(try DNSProtectionConfiguration.sourceGeneration(at: link))
+        XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: link))
     }
 
     func testPFReferenceRecoveryDistinguishesAlreadyReleasedAndOtherOwners() throws {

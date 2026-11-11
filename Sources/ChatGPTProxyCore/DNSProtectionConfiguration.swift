@@ -2,7 +2,10 @@ import Foundation
 import Darwin
 
 public enum DNSProtectionConfiguration {
-    public static let version = "3"
+    public static let version = "4"
+    public static let maximumConfigurationSize = 32 * 1024 * 1024
+    // Recovery journals include both source and runtime YAML, JSON-escaped.
+    public static let maximumRecoverySize = 256 * 1024 * 1024
     public static let label = "local.alex.chatgpt-proxy.dns"
     public static let helperPath = "/Library/PrivilegedHelperTools/\(label)"
     public static let socketPath = "/var/run/\(label).sock"
@@ -42,11 +45,48 @@ public enum DNSProtectionConfiguration {
 
     public static func sourceGeneration(at url: URL, ownerUID: uid_t = getuid()) throws -> String {
         var info = stat()
-        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == ownerUID,
-              info.st_size <= DNSProtectionIPC.maximumMessageSize else {
-            throw MonitorError.message("Clash 工作配置必须是当前用户拥有的普通文件，且不超过 4 MB")
+        guard lstat(url.path, &info) == 0 else {
+            throw MonitorError.message("无法访问 Clash 工作配置")
         }
+        try validateSource(info, ownerUID: ownerUID)
         return "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec)"
+    }
+
+    private static func validateSource(_ info: stat, ownerUID: uid_t) throws {
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == ownerUID else {
+            throw MonitorError.message("Clash 工作配置必须是当前用户拥有的普通文件，且不能是符号链接")
+        }
+        try validateSourceSize(info.st_size)
+    }
+
+    private static func validateSourceSize(_ size: Int64) throws {
+        guard size >= 0, size <= maximumConfigurationSize else {
+            let actual = String(format: "%.2f", Double(size) / 1024 / 1024)
+            throw MonitorError.message("Clash 工作配置大小为 \(actual) MiB（\(size) 字节），超过 32 MiB 上限")
+        }
+    }
+
+    public static func readSource(at url: URL, ownerUID: uid_t = getuid()) throws -> String {
+        _ = try sourceGeneration(at: url, ownerUID: ownerUID)
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw MonitorError.message("无法读取 Clash 工作配置") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw MonitorError.message("无法检查 Clash 工作配置") }
+        try validateSource(info, ownerUID: ownerUID)
+        var bytes = Data()
+        while bytes.count <= maximumConfigurationSize {
+            let chunk = try handle.read(upToCount: min(64 * 1024, maximumConfigurationSize + 1 - bytes.count)) ?? Data()
+            if chunk.isEmpty { break }
+            bytes.append(chunk)
+        }
+        try validateSourceSize(Int64(bytes.count))
+        guard fstat(fd, &info) == 0 else { throw MonitorError.message("无法检查 Clash 工作配置") }
+        try validateSource(info, ownerUID: ownerUID)
+        guard let yaml = String(data: bytes, encoding: .utf8) else {
+            throw MonitorError.message("Clash 工作配置不是有效 UTF-8")
+        }
+        return yaml
     }
 
     public struct BootstrapInspection: Decodable, Sendable {

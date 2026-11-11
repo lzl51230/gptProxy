@@ -40,11 +40,9 @@ struct ClashDNSConfiguration {
             .appendingPathComponent("Library/Application Support/mihomo-party")
         let source = directory.appendingPathComponent("work/config.yaml")
         let generation = try DNSProtectionConfiguration.sourceGeneration(at: source)
-        let yaml = try String(contentsOf: source, encoding: .utf8)
+        let yaml = try DNSProtectionConfiguration.readSource(at: source)
         let saved = directory.appendingPathComponent("mihomo.yaml")
-        let savedYAML = (try? DNSProtectionConfiguration.sourceGeneration(at: saved)).flatMap { _ in
-            try? String(contentsOf: saved, encoding: .utf8)
-        }
+        let savedYAML = try? DNSProtectionConfiguration.readSource(at: saved)
         let general = try await client.request(socket: snapshot.socket, path: "/configs")
         return Self(source: source, generation: generation, socket: snapshot.socket, yaml: yaml,
                     general: general, saved: savedYAML)

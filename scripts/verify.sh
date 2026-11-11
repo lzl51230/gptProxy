@@ -26,7 +26,7 @@ fi
 ARCHITECTURES=$(/usr/bin/lipo -archs "$APP_DIR/Contents/MacOS/ChatGPTProxyLauncher")
 [[ "$ARCHITECTURES" == *arm64* && "$ARCHITECTURES" == *x86_64* ]]
 HELPER="$APP_DIR/Contents/Resources/DNSProtectionHelper"
-[[ -x "$HELPER" && "$("$HELPER" --version)" == 3 ]]
+[[ -x "$HELPER" && "$("$HELPER" --version)" == 4 ]]
 /usr/bin/codesign --verify --strict "$HELPER"
 HELPER_ARCHITECTURES=$(/usr/bin/lipo -archs "$HELPER")
 [[ "$HELPER_ARCHITECTURES" == *arm64* && "$HELPER_ARCHITECTURES" == *x86_64* ]]

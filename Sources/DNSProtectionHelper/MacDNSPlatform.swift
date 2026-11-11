@@ -49,7 +49,7 @@ actor MacDNSPlatform {
         stateURL = directory.appendingPathComponent("recovery.json")
         if FileManager.default.fileExists(atPath: stateURL.path) {
             guard lstat(stateURL.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == 0,
-                  info.st_size <= 2 * DNSProtectionIPC.maximumMessageSize else { throw MonitorError.message("DNS 恢复文件身份验证失败") }
+                  info.st_size <= DNSProtectionConfiguration.maximumRecoverySize else { throw MonitorError.message("DNS 恢复文件身份验证失败") }
             let bytes = try Data(contentsOf: stateURL)
             if let object = try JSONSerialization.jsonObject(with: bytes) as? [String:Any], object["version"] != nil {
                 throw MonitorError.message("未知旧版 DNS 恢复格式，已保留记录")
@@ -62,7 +62,7 @@ actor MacDNSPlatform {
     func persist() throws {
         guard let journal else { return }
         let data = try JSONEncoder().encode(journal)
-        guard data.count <= 2 * DNSProtectionIPC.maximumMessageSize else { throw MonitorError.message("DNS 恢复记录过大") }
+        guard data.count <= DNSProtectionConfiguration.maximumRecoverySize else { throw MonitorError.message("DNS 恢复记录过大") }
         // Atomic replacement in a root-only directory; crash recovery never reads a partial write.
         try data.write(to: stateURL, options: .atomic)
         guard chmod(stateURL.path, 0o600) == 0 else { throw MonitorError.message("无法保护 DNS 恢复记录") }
@@ -84,17 +84,7 @@ actor MacDNSPlatform {
     }
 
     func latestSource(uid: uid_t) throws -> String {
-        let url = try sourceURL(uid: uid)
-        _ = try generation(uid: uid)
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
-        guard fd >= 0 else { throw MonitorError.message("无法读取当前 Clash 配置") }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        var info = stat()
-        guard fstat(fd, &info) == 0, info.st_uid == uid, info.st_mode & S_IFMT == S_IFREG,
-              info.st_size <= DNSProtectionIPC.maximumMessageSize else { throw MonitorError.message("当前 Clash 配置身份验证失败") }
-        guard let bytes = try handle.read(upToCount: DNSProtectionIPC.maximumMessageSize),
-              let yaml = String(data: bytes, encoding: .utf8) else { throw MonitorError.message("当前 Clash 配置不是有效 UTF-8") }
-        return yaml
+        try DNSProtectionConfiguration.readSource(at: sourceURL(uid: uid), ownerUID: uid)
     }
 
     func validateSocket(_ path: String, uid: uid_t? = nil) throws {

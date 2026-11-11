@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public enum DNSProtectionIPC {
-    public static let maximumMessageSize = 4 * 1024 * 1024
+    public static let maximumMessageSize = 128 * 1024 * 1024
 
     public static func address(_ path: String) throws -> sockaddr_un {
         var address = sockaddr_un()
@@ -19,7 +19,7 @@ public enum DNSProtectionIPC {
     public static func send<T: Encodable>(_ value: T, descriptor: Int32) throws {
         var data = try JSONEncoder().encode(value)
         data.append(10)
-        guard data.count <= maximumMessageSize else { throw MonitorError.message("DNS 配置超过 4 MB") }
+        guard data.count <= maximumMessageSize else { throw MonitorError.message("DNS 辅助服务消息超过 128 MiB 上限") }
         var offset = 0
         while offset < data.count {
             let count = data.withUnsafeBytes { Darwin.send(descriptor, $0.baseAddress!.advanced(by: offset), data.count - offset, 0) }
@@ -39,7 +39,7 @@ public enum DNSProtectionIPC {
             }
             data.append(contentsOf: buffer.prefix(count))
         }
-        throw MonitorError.message("DNS 辅助服务消息超过限制")
+        throw MonitorError.message("DNS 辅助服务消息超过 128 MiB 上限")
     }
 
     public static func configure(_ descriptor: Int32, seconds: Int = 45) {
