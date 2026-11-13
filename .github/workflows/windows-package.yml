@@ -56,7 +56,7 @@ jobs:
           & ./scripts/package-windows.ps1 -SkipBuild
           $version = $env:RELEASE_TAG.Substring(1)
           $exe = "dist/ChatGPT-Proxy-$version-Windows-x64-Setup.exe"
-          $actual = (Get-Item $exe).VersionInfo.ProductVersion
+          $actual = (Get-Item $exe).VersionInfo.ProductVersion.Trim()
           if ($actual -ne $version) { throw "Installer version mismatch: $actual" }
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $(Split-Path $exe -Leaf)" | Set-Content "$exe.sha256" -Encoding ascii
