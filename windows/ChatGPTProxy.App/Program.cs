@@ -28,6 +28,7 @@ internal static class Program
     private static async Task<int> Command(string[] args)
     {
         if(args[0] is "--qa-smoke" or "--qa-protection-hold") {
+            await PortableRuntime.EnsureService();
             using var cancellation=new CancellationTokenSource();
             var pulse=Task.Run(async ()=>{while(!cancellation.IsCancellationRequested){try{await ServiceClient.Call(new JsonObject{["command"]="heartbeat"});await Task.Delay(2000,cancellation.Token);}catch(OperationCanceledException){break;}catch{await Task.Delay(500);}}});
             var evidence=new JsonObject();
@@ -44,7 +45,7 @@ internal static class Program
                 if(live["ready"]?.GetValue<bool>()!=true||live["monitor"]?["phase"]?.GetValue<string>()!="maintaining")throw new IOException("Live protection or Codex observation failed");
                 evidence["restored"]=await ServiceClient.Call(new JsonObject{["command"]="restore"});
                 Console.WriteLine(evidence.ToJsonString());return 0;
-            } finally {try{await ServiceClient.Call(new JsonObject{["command"]="restore"});}finally{cancellation.Cancel();await pulse;}}
+            } finally {try{await ServiceClient.Call(new JsonObject{["command"]="restore"});}finally{cancellation.Cancel();await pulse;await PortableRuntime.Shutdown();}}
         }
         var command=args[0] switch {"--restore"=>"restore","--status"=>"status","--shutdown"=>"shutdown",_=>throw new ArgumentException("Unsupported command")};
         Console.WriteLine((await ServiceClient.Call(new JsonObject{["command"]=command})).ToJsonString());
@@ -73,7 +74,7 @@ internal sealed class MainWindow : Window
     private readonly DispatcherTimer timer=new(){Interval=TimeSpan.FromSeconds(2)};
     private JsonArray preferences=new();
     private bool busy,exiting,polling;
-    private readonly string settingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ChatGPT Proxy","settings.json");
+    private readonly string settingsPath=PortableRuntime.SettingsPath;
     public MainWindow()
     {
         Title="ChatGPT Proxy";Width=620;Height=640;MinWidth=560;MinHeight=500;WindowStartupLocation=WindowStartupLocation.CenterScreen;
@@ -85,7 +86,7 @@ internal sealed class MainWindow : Window
         var actions=new StackPanel{Orientation=Orientation.Horizontal};actions.Children.Add(activate);actions.Children.Add(restore);root.Children.Add(actions);
         var repair=new Button{Content="安装或修复 ProxyBridge",HorizontalAlignment=HorizontalAlignment.Left,Padding=new Thickness(12,6,12,6),Margin=new Thickness(0,10,0,0)};
         repair.Click+=async (_,_)=>{if(busy)return;busy=true;try{
-            await ServiceClient.Call(new JsonObject{["command"]="restore"});
+            if(!PortableRuntime.IsPortable||await PortableRuntime.HasSession())await ServiceClient.Call(new JsonObject{["command"]="restore"});
             using var core=new NativeCore();var validated=core.Call(new{op="validatePort",value=port.Text}).GetInt32();
             var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),@"WindowsPowerShell\v1.0\powershell.exe")){UseShellExecute=true,Verb="runas",Arguments="-NoProfile -ExecutionPolicy Bypass -File \""+Path.Combine(AppContext.BaseDirectory,"install-proxybridge-windows.ps1")+"\" -ProxyPort "+validated};
             using var process=Process.Start(start)??throw new IOException("无法启动组件修复");await process.WaitForExitAsync();
@@ -109,6 +110,7 @@ internal sealed class MainWindow : Window
         if(busy)return;busy=true;activate.IsEnabled=false;restore.IsEnabled=false;
         try {
             status.Text="正在准备代理与 DNS 保护…";
+            await PortableRuntime.EnsureService();
             await ServiceClient.Call(new JsonObject{["command"]="enable",["port"]=port.Text,["regions"]=preferences.DeepClone()});
             status.Text="等待 ChatGPT 正常退出并重新启动（最多 15 秒）…";
             var process=await ChatGPTLifecycle.Restart();
@@ -118,12 +120,25 @@ internal sealed class MainWindow : Window
         finally{busy=false;activate.IsEnabled=true;restore.IsEnabled=true;}
     }
     private async Task Restore(){if(busy)return;busy=true;try{await ServiceClient.Call(new JsonObject{["command"]="restore"});await Poll();}catch(Exception e){status.Text=e.Message;}finally{busy=false;}}
-    private async void Exit(){if(busy)return;await Restore();try{var state=await ServiceClient.Call(new JsonObject{["command"]="status"});if(state["phase"]?.GetValue<string>()!="disabled")return;}catch(Exception e){status.Text=e.Message;Show();return;}exiting=true;timer.Stop();tray.Dispose();System.Windows.Application.Current.Shutdown();}
+    private async void Exit()
+    {
+        if(busy)return;
+        if(!PortableRuntime.IsPortable||await PortableRuntime.HasSession()) {
+            await Restore();
+            try {
+                var state=await ServiceClient.Call(new JsonObject{["command"]="status"});
+                if(state["phase"]?.GetValue<string>()!="disabled")return;
+                await PortableRuntime.Shutdown();
+            }catch(Exception e){status.Text=e.Message;Show();return;}
+        }
+        exiting=true;timer.Stop();tray.Dispose();System.Windows.Application.Current.Shutdown();
+    }
     private async Task Poll()
     {
         if(polling)return;polling=true;
         try {
             var state=await ServiceClient.Call(new JsonObject{["command"]="heartbeat"});
+            if(PortableRuntime.IsPortable&&state["portableOwnerPid"]?.GetValue<int>()!=Environment.ProcessId){if(!busy)status.Text="便携模式：点击「保护并启动 ChatGPT」，授权临时后台恢复组件。";return;}
             if(!busy)status.Text=state["detail"]?.GetValue<string>()??"";
             if(state["exitRequested"]?.GetValue<bool>()==true&&!busy){exiting=true;timer.Stop();tray.Dispose();System.Windows.Application.Current.Shutdown();return;}
             var ready=state["ready"]?.GetValue<bool>()==true;tray.Text=ready?"ChatGPT Proxy · 保护已启用":"ChatGPT Proxy · 未启用";
@@ -131,7 +146,7 @@ internal sealed class MainWindow : Window
             monitor.Text=observation?["status"]?.GetValue<string>()??"等待启动监控";
             if(observation?["currentNode"]!=null)monitor.Text+="\n节点："+observation["currentNode"]+"    连接："+observation["connectionSeconds"]+" 秒";
             if(observation?["candidates"] is JsonObject catalog){bool changed=false;foreach(var (code,_) in catalog)if(!preferences.Any(p=>p?["code"]?.GetValue<string>()==code)){preferences.Add(new JsonObject{["code"]=code,["isEnabled"]=false});changed=true;}if(changed){RebuildRegions();SaveSettings();}}
-        }catch(Exception e){if(!busy)status.Text="本机服务不可用："+e.Message;}
+        }catch(Exception e){if(!busy)status.Text=PortableRuntime.IsPortable?"便携模式：点击「保护并启动 ChatGPT」，授权临时后台恢复组件。":"本机服务不可用："+e.Message;}
         finally{polling=false;}
     }
     private void RebuildRegions()

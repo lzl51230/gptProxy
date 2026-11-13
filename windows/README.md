@@ -13,17 +13,19 @@ Install Rust through rustup (the repository pins the toolchain), MSVC C++ Build 
 ./scripts/package-windows.ps1 -SkipBuild
 ```
 
-Packaging additionally needs Inno Setup 7 x64. The output is `dist/ChatGPT-Proxy-2.3.8-Windows-x64-Setup.exe`. The installer contains both .NET runtimes, the shared Rust DLL and notices. The Rust DLL statically links the MSVC runtime; end users do not need MSVC Build Tools, the VC++ redistributable or OpenSSL. It does not contain ChatGPT, Clash Party or ProxyBridge. The launcher can download and install the pinned official ProxyBridge 4.1.1 release through the selected local SOCKS port, checking the release hash and installed component hashes.
+The output is `dist/ChatGPT-Proxy-2.3.9-Windows-x64-Portable.zip`; packaging uses PowerShell and no installer compiler. Extract the entire folder and run `ChatGPTProxy.App.exe`. The ZIP contains both .NET runtimes, the shared Rust DLL and notices. The Rust DLL statically links the MSVC runtime; end users do not need MSVC Build Tools, the VC++ redistributable or OpenSSL. It does not contain ChatGPT, Clash Party or ProxyBridge. The launcher can download and install the pinned official ProxyBridge 4.1.1 release through the selected local SOCKS port, checking the release hash and installed component hashes.
 
 Clash configuration files and subscription source files support up to 32 MiB per file. Reads are bounded, recovery records allow up to 256 MiB, and oversized input reports its size limit. Configuration reads still impersonate the Clash process user.
 
-The `Windows release package` GitHub Actions workflow can build an existing `vX.Y.Z` tag, run the same verification, and produce the versioned installer with a SHA-256 file. It adjusts only Windows version metadata to match the requested tag and records the source commit in the workflow artifact.
+The `Windows release package` GitHub Actions workflow can build an existing `vX.Y.Z` tag, run the same verification, and produce the versioned portable ZIP with a SHA-256 file. It adjusts only Windows version metadata to match the requested tag and records the source commit in the workflow artifact.
 
 NuGet lock files and the .NET runtime version are pinned. To deliberately update dependencies, restore with `--force-evaluate`, review all four lock files, then run verification again. Do not overwrite WPF runtime files with the service publish output.
 
 ## Lifecycle and recovery
 
-The installer binds the service to the original interactive user's SID. Elevated unattended installation can specify `/OWNERSID=S-1-...`. The named pipe rejects remote clients, authenticates the caller SID and installed launcher path, and exposes only fixed commands. The launcher authenticates the server against SCM's running service PID. Reads of Clash configuration and subscription files impersonate the discovered Clash process, so the service does not grant those paths SYSTEM file access.
+The portable launcher requests administrator authorization only when protection is enabled. The bootstrap validates the launcher's PID, start time and executable path, then copies the recovery service into a cache writable only by SYSTEM/Administrators (the owner has read/execute access for impersonated runtime loads) under `%ProgramData%\ChatGPT Proxy\portable`. Its protected owner record binds the caller SID, portable launcher path and executable hash. Named-pipe clients authenticate the server against SCM; the service authenticates the launcher before accepting fixed commands. Configuration reads still impersonate the Clash process user.
+
+The temporary service is automatic while recovery may be needed. On normal tray exit or loss of the launcher, it restores the network, exits, unregisters itself and removes its runtime cache. After a crash or reboot, it restores before cleanup; failed recovery retains the journal and service. The portable folder can then be moved or deleted. No runtime binary is executed from a user-writable path by the registered service.
 
 Activation starts the relay and ProxyBridge, persists the original DNS configuration, enables loopback DNS and a dynamic WFP session, and validates protection. ChatGPT is activated through its MSIX application identity. Its File > Quit accelerator requests normal shutdown; failure to exit within 15 seconds rolls back protection. The launcher does not force-terminate ChatGPT. The UI reports success only after verifying the new package process.
 
@@ -31,13 +33,17 @@ Closing the launcher window keeps it in the tray. Tray exit restores DNS first. 
 
 The protected journal is `%ProgramData%\ChatGPT Proxy\recovery-v1.json`, readable only by SYSTEM and Administrators. It records intended changes before mutation. Recovery restores static or automatic DNS by adapter GUID, preserves subsequent explicit user changes and retains the journal if a required adapter is unavailable. Unknown journal versions block mutation and upgrades instead of being discarded.
 
-The installer asks the running launcher to restore and exit before replacing files. Uninstall also requires successful recovery. Preferences remain in `%LocalAppData%\ChatGPT Proxy\settings.json`.
+Settings live in `Data/settings.json` beside the portable launcher. Enabling login startup registers that folder's path, so moving the folder requires updating that option. ZIP packaging does not provide a trusted publisher signature; Windows may still show a reputation/publisher prompt.
 
-Emergency recovery from an elevated console:
+For migration, restore and exit an old installed version first. Portable startup can replace its recovery service after successful restoration, but does not delete the old program files. Close a separately running ProxyBridge desktop instance before enabling protection.
+
+Emergency recovery while the portable session exists:
 
 ```powershell
-& "$env:ProgramFiles\ChatGPT Proxy\ChatGPTProxy.App.exe" --restore
+& 'path\to\ChatGPT Proxy\ChatGPTProxy.App.exe' --restore
 ```
+
+Recovery records are retained under ProgramData if restoration fails; do not remove them to force startup.
 
 ## Tests
 

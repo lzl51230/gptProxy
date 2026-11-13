@@ -13,15 +13,25 @@ builder.Services.AddWindowsService(options=>options.ServiceName="ChatGPTProxy");
 builder.Services.AddHostedService<ProxyWorker>();
 await builder.Build().RunAsync();
 
-internal sealed partial class ProxyWorker(ILogger<ProxyWorker> logger) : BackgroundService
+internal sealed partial class ProxyWorker(ILogger<ProxyWorker> logger,IHostApplicationLifetime lifetime) : BackgroundService
 {
+    private PortableSession? portable;
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var config=JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,"owner.json"),stoppingToken))!;
         var owner=new SecurityIdentifier(config["sid"]!.GetValue<string>());
+        portable=config["portable"]?.GetValue<bool>()==true?new PortableSession(config):null;
         await using var coordinator=new Coordinator(owner.Value);
         await coordinator.Initialize();
-        var watchdog=Task.Run(async ()=>{while(!stoppingToken.IsCancellationRequested){try{await Task.Delay(1000,stoppingToken);await coordinator.Watchdog();}catch(OperationCanceledException){break;}catch(Exception e){logger.LogError("Watchdog: {Message}",e.Message);}}},stoppingToken);
+        var cleanup=false;
+        DateTime? exitRequestedAt=null;
+        var watchdog=Task.Run(async ()=>{while(!stoppingToken.IsCancellationRequested){try{
+            await Task.Delay(1000,stoppingToken);await coordinator.Watchdog();
+            if(coordinator.ExitRequested)exitRequestedAt??=DateTime.UtcNow;
+            if(portable!=null&&(!portable.OwnerAlive||(exitRequestedAt is {} requested&&DateTime.UtcNow-requested>TimeSpan.FromSeconds(5)))) {
+                await coordinator.EndPortableSession();cleanup=true;lifetime.StopApplication();break;
+            }
+        }catch(OperationCanceledException){break;}catch(Exception e){logger.LogError("Watchdog: {Message}",e.Message);}}},stoppingToken);
         var clients=new List<Task>();
         try {while(!stoppingToken.IsCancellationRequested) {
             // Bound idle clients; each connection has a deadline and exactly one command.
@@ -33,7 +43,7 @@ internal sealed partial class ProxyWorker(ILogger<ProxyWorker> logger) : Backgro
             try{await pipe.WaitForConnectionAsync(stoppingToken);}catch{pipe.Dispose();throw;}
             clients.Add(Serve(pipe,owner,coordinator,stoppingToken));
         }}catch(OperationCanceledException){}
-        finally{await Task.WhenAll(clients);await watchdog;}
+        finally{await Task.WhenAll(clients);await watchdog;if(cleanup)PortableCleanup.Schedule();}
     }
     private async Task Serve(NamedPipeServerStream pipe,SecurityIdentifier owner,Coordinator coordinator,CancellationToken stopping)
     {
@@ -51,9 +61,11 @@ internal sealed partial class ProxyWorker(ILogger<ProxyWorker> logger) : Backgro
                 } else {
                     using var process=Process.GetProcessById((int)pid);
                     var expected=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"..","ChatGPTProxy.App.exe"));
-                    if(!string.Equals(process.MainModule?.FileName,expected,StringComparison.OrdinalIgnoreCase))throw new UnauthorizedAccessException("Unexpected launcher executable");
+                    var valid=portable!=null?portable.MatchesLauncher(process.MainModule?.FileName):string.Equals(process.MainModule?.FileName,expected,StringComparison.OrdinalIgnoreCase);
+                    if(!valid)throw new UnauthorizedAccessException("Unexpected launcher executable");
                 }
                 var value=await coordinator.Command(request,(int)pid);
+                if(portable!=null)value["portableOwnerPid"]=portable.LauncherPid;
                 await ServiceClient.Write(pipe,new JsonObject{["ok"]=true,["value"]=value},deadline.Token);
             }catch(Exception e){logger.LogWarning(e,"Control request failed");try{await ServiceClient.Write(pipe,new JsonObject{["ok"]=false,["error"]=e.Message},deadline.Token);}catch{}}
         }

@@ -16,9 +16,9 @@
 
 共用逻辑位于 `core/`，使用 Rust：TCP 中继、SOCKS5/UDP 检测、单连接 TLS 心跳、监控异步编排、候选地区与订阅策略、Clash 协议、DNS 双栈 TCP/UDP 转发、恢复事务、配置变换与 CLI 输出解析。macOS 的 SwiftUI 与 Windows 的 WPF 通过同一版本化 C ABI 调用它；界面、进程、系统权限、原生防火墙和网络设置操作保留在平台适配层。
 
-macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Rust DLL。Windows 使用 MSIX 激活保留 ChatGPT 应用包身份，通过 ProxyBridge 进程规则和受保护 DNS 转发流量；上文的 macOS 代理启动参数与环境变量注入不适用于 Windows。Windows 的安装、构建和恢复说明见 [windows/README.md](windows/README.md)。
+macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Rust DLL。Windows 使用 MSIX 激活保留 ChatGPT 应用包身份，通过 ProxyBridge 进程规则和受保护 DNS 转发流量；上文的 macOS 代理启动参数与环境变量注入不适用于 Windows。Windows 使用解压即用的 ZIP 便携包，启用保护时授权临时后台恢复组件，退出恢复成功后自动清理。Windows 的使用、构建和恢复说明见 [windows/README.md](windows/README.md)。
 
-开发需安装 rustup；仓库固定 Rust 工具链和 Cargo/NuGet 依赖。`make test` 构建共享核心并运行 Rust、Swift 测试；`make verify` 还检查 macOS Universal 包。Windows 运行 `powershell -File scripts/verify-windows.ps1`，随后使用 `scripts/package-windows.ps1 -SkipBuild` 生成安装包。同一套真实 SOCKS/TLS 与 DNS 测试可在两端执行。
+开发需安装 rustup；仓库固定 Rust 工具链和 Cargo/NuGet 依赖。`make test` 构建共享核心并运行 Rust、Swift 测试；`make verify` 还检查 macOS Universal 包。Windows 运行 `powershell -File scripts/verify-windows.ps1`，随后使用 `scripts/package-windows.ps1 -SkipBuild` 生成 ZIP 便携包。同一套真实 SOCKS/TLS 与 DNS 测试可在两端执行。
 
 详细验证结果与边界见 [Windows 与共享核心验收记录](docs/validation-windows-2026-11-06.md) 和 [macOS helper 特权验收记录](docs/validation-macos-helper-2026-11-06.md)。
 
@@ -30,7 +30,7 @@ macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Ru
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.8-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.9-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 

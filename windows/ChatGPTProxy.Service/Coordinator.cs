@@ -29,6 +29,13 @@ internal sealed class Coordinator : IAsyncDisposable
     private string phase="disabled";
     private string sourceGeneration="";
     private string selectionSignature="";
+    public bool ExitRequested=>exitRequested;
+    public async Task EndPortableSession()
+    {
+        await mutation.WaitAsync();
+        try {await Stop();exitRequested=true;}
+        finally {mutation.Release();}
+    }
     public Coordinator(string ownerSid)
     {
         this.ownerSid=ownerSid;
