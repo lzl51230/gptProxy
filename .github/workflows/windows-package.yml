@@ -1,0 +1,71 @@
+name: Windows release package
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to build (for example v2.3.7)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Validate release tag
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Expected a vX.Y.Z release tag' }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.403
+      - name: Match installer and assemblies to the release version
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $props = 'windows/Directory.Build.props'
+          (Get-Content $props -Raw) -replace '<Version>[^<]+</Version>', "<Version>$version</Version>" | Set-Content $props -Encoding utf8
+          $installer = 'windows/installer/ChatGPTProxy.iss'
+          (Get-Content $installer -Raw) -replace '#define ProductVersion "[^"]+"', "#define ProductVersion `"$version`"" | Set-Content $installer -Encoding utf8
+          git rev-parse HEAD | Set-Content release-source.txt
+      - name: Install verified Inno Setup
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') { throw 'Inno Setup hash mismatch' }
+          $process = Start-Process $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
+      - name: Verify Windows and package
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'MSVC build tools are unavailable' }
+          & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          & ./scripts/verify-windows.ps1
+          & ./scripts/package-windows.ps1 -SkipBuild
+          $version = $env:RELEASE_TAG.Substring(1)
+          $exe = "dist/ChatGPT-Proxy-$version-Windows-x64-Setup.exe"
+          $actual = (Get-Item $exe).VersionInfo.ProductVersion
+          if ($actual -ne $version) { throw "Installer version mismatch: $actual" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $exe -Leaf)" | Set-Content "$exe.sha256" -Encoding ascii
+          Move-Item release-source.txt dist/release-source.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-${{ inputs.release_tag }}
+          path: |
+            dist/*-Windows-x64-Setup.exe
+            dist/*-Windows-x64-Setup.exe.sha256
+            dist/release-source.txt
+          if-no-files-found: error
