@@ -11,11 +11,11 @@ if(!$SkipCore){
 $stage="$root\build\windows\app"
 if(Test-Path $stage){Remove-Item $stage -Recurse -Force}
 New-Item -ItemType Directory -Force $stage | Out-Null
-foreach($project in @('ChatGPTProxy.App','ChatGPTProxy.Service')){
+foreach($project in @('ChatGPTProxy.App','ChatGPTProxy.Service','ChatGPTProxy.Updater')){
  if(Test-Path "$root\build\windows\$project"){Remove-Item "$root\build\windows\$project" -Recurse -Force}
  & dotnet publish "$root\windows\$project" -c Release -r win-x64 --self-contained true -p:RestoreLockedMode=true -o "$root\build\windows\$project"
  if($LASTEXITCODE){throw "$project build failed"}
- $target=if($project -eq 'ChatGPTProxy.App'){$stage}else{Join-Path $stage 'Service'}
+ $target=if($project -eq 'ChatGPTProxy.Service'){Join-Path $stage 'Service'}elseif($project -eq 'ChatGPTProxy.Updater'){Join-Path $stage 'Updater'}else{$stage}
  New-Item -ItemType Directory -Force $target | Out-Null
  Copy-Item "$root\build\windows\$project\*" $target -Recurse -Force
  Copy-Item "$root\build\rust\x86_64-pc-windows-msvc\release\gpt_proxy_core.dll" $target -Force
@@ -29,7 +29,7 @@ Copy-Item "$root\scripts\install-proxybridge-windows.ps1" $stage -Force
 $sysroot=(& rustc --print sysroot).Trim()
 Copy-Item "$sysroot\share\doc\rust\COPYRIGHT-library.html" "$stage\Rust-Std-Notices.html"
 $notices=Join-Path $stage 'Notices'
-foreach($project in @('ChatGPTProxy.App','ChatGPTProxy.Service')) {
+foreach($project in @('ChatGPTProxy.App','ChatGPTProxy.Service','ChatGPTProxy.Updater')) {
  $assets=Get-Content "$root\windows\$project\obj\project.assets.json" -Raw | ConvertFrom-Json
  foreach($library in $assets.libraries.PSObject.Properties) {
   if($library.Value.type -ne 'package'){continue}

@@ -42,6 +42,7 @@ internal sealed partial class MainWindow
         monitorToggle.Click+=(_,_)=>ToggleMonitor();mutations.Add(monitorToggle);root.Children.Add(monitorToggle);var note=Label("无凭据检测仅验证网络与连接保持情况");note.SetResourceReference(TextBlock.ForegroundProperty,"Secondary");root.Children.Add(note);
         root.Children.Add(new Separator{Margin=new Thickness(0,12,0,12)});var primary=new WrapPanel();activate.SetResourceReference(Control.BackgroundProperty,"Accent");activate.Foreground=Brushes.White;primary.Children.Add(activate);primary.Children.Add(Action("打开 .codex",()=>{var path=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),".codex");if(Directory.Exists(path))Process.Start(new ProcessStartInfo(path){UseShellExecute=true});else ShowError("尚未找到 .codex 目录");}));root.Children.Add(primary);
         var secondary=new WrapPanel();secondary.Children.Add(restore);secondary.Children.Add(Action("首次配置",ShowSetup));secondary.Children.Add(Action("查看代理日志",ShowLogs));root.Children.Add(secondary);
+        root.Children.Add(CreateUpdatePanel());
         mutations.AddRange(new UIElement[]{activate,restore,repair,port,regions,paused});Content=new ScrollViewer{Content=root,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
     }
     private Window Dialog(string title,object content,double width=480,double height=680)
@@ -56,6 +57,7 @@ internal sealed partial class MainWindow
         var body=new StackPanel{Margin=new Thickness(20)};Section(body,"外观");foreach(var i in new[]{0,2,1,3,4}){var choice=new RadioButton{Content=AppTheme.Titles[i],IsChecked=theme.SelectedIndex==i,Margin=new Thickness(0,0,0,8),GroupName="Appearance"};var selected=i;choice.Checked+=(_,_)=>theme.SelectedIndex=selected;body.Children.Add(choice);}body.Children.Add(Label("配色参考 VS Code，立即应用并在下次启动时保留。"));
         Section(body,"启动");startup.Content="开机自启动";body.Children.Add(startup);body.Children.Add(Label("登录 Windows 后驻留托盘，不自动打开主窗口。"));
         Section(body,"Clash 备用地区");body.Children.Add(Label("当前地区优先；备用地区按从上到下的顺序测试，候选长连接保持 10 秒后接受。"));body.Children.Add(regions);body.Children.Add(Action("刷新地区",async ()=>await RefreshRegions()));
+        Section(body,"应用更新");body.Children.Add(CreateUpdatePanel());
         Section(body,"代理");body.Children.Add(Label("本地代理端口"));body.Children.Add(port);body.Children.Add(Action("保存并重新检测",async ()=>{try{using var core=new NativeCore();core.Call(new{op="validatePort",value=port.Text});SaveSettings();await RefreshDiagnostics();}catch(Exception e){ShowError(e.Message);}}));
         settingsWindow=Dialog("设置",new ScrollViewer{Content=body,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});settingsWindow.Closed+=(_,_)=>{body.Children.Clear();settingsWindow=null;};settingsWindow.Show();
     }
@@ -70,7 +72,10 @@ internal sealed partial class MainWindow
         if(trayWindow!=null){trayWindow.Close();return;}
         var body=new StackPanel{Margin=new Thickness(12)};foreach(var row in trayRows)body.Children.Add(row);body.Children.Add(new Separator());
         body.Children.Add(Action("打开主窗口",()=>{trayWindow?.Close();Show();ActivateWindow();}));body.Children.Add(Action("设置…",()=>{trayWindow?.Close();ShowSettings();}));body.Children.Add(Action(paused.IsChecked==true?"恢复监控":"暂停监控",()=>{trayWindow?.Close();ToggleMonitor();}));body.Children.Add(Action("恢复 DNS 并退出",Exit));
-        trayWindow=Dialog("ChatGPT Proxy",body,440,380);trayWindow.ShowInTaskbar=false;trayWindow.ResizeMode=ResizeMode.NoResize;trayWindow.Left=Math.Max(0,SystemParameters.WorkArea.Right-450);trayWindow.Top=Math.Max(0,SystemParameters.WorkArea.Bottom-390);trayWindow.Deactivated+=(_,_)=>trayWindow?.Close();trayWindow.Closed+=(_,_)=>{body.Children.Clear();trayWindow=null;};trayWindow.Show();
+        trayWindow=Dialog("ChatGPT Proxy",body,440,380);trayWindow.ShowInTaskbar=false;trayWindow.ResizeMode=ResizeMode.NoResize;trayWindow.Left=Math.Max(0,SystemParameters.WorkArea.Right-450);trayWindow.Top=Math.Max(0,SystemParameters.WorkArea.Bottom-390);var panel=trayWindow;var closing=false;
+        panel.Closing+=(_,_)=>closing=true;
+        panel.Deactivated+=(_,_)=>{if(!closing)panel.Close();};
+        panel.Closed+=(_,_)=>{body.Children.Clear();if(ReferenceEquals(trayWindow,panel))trayWindow=null;};panel.Show();
     }
     private async void ToggleMonitor(){if(busy)return;paused.IsChecked=paused.IsChecked!=true;await SavePreferences();await Poll();}
     private void UpdateBusy(){foreach(var control in mutations)control.IsEnabled=!busy;activate.IsEnabled=!busy&&!protectionReady;}

@@ -21,8 +21,11 @@ internal static class Program
     internal static bool UiTesting;
     [STAThread] public static int Main(string[] args)
     {
+#if DEBUG
+        if(UpdateQa.Enabled && UpdateQa.Text("scenario")=="startup-failure" && AppUpdates.CurrentVersion=="2.4.0")return 19;
+#endif
         if(args.Length==2&&args[0]=="--qa-ui"){UiTesting=true;var qaApp=new System.Windows.Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};try{var qaWindow=new MainWindow();qaWindow.VerifyVisuals(args[1]);qaApp.Shutdown();return 0;}catch(Exception e){Directory.CreateDirectory(args[1]);File.WriteAllText(Path.Combine(args[1],"error.txt"),e.ToString());qaApp.Shutdown();return 1;}}
-        if(args.Length>0&&args[0]!="--background"){try{return Command(args).GetAwaiter().GetResult();}catch(Exception e){Console.Error.WriteLine(e.ToString());return 1;}}
+        if(args.Length>0&&args[0]!="--background"&&args[0]!="--update-restart"){try{return Command(args).GetAwaiter().GetResult();}catch(Exception e){Console.Error.WriteLine(e.ToString());return 1;}}
         using var mutex=new Mutex(true,"Local\\ChatGPTProxy.Launcher",out var first);if(!first)return 0;
         var app=new System.Windows.Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};
         var window=new MainWindow();if(args.Contains("--background")){app.MainWindow=window;app.Run();}else app.Run(window);return 0;

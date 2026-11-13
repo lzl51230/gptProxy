@@ -16,4 +16,5 @@ trap '/bin/rm -rf "$STAGE"' EXIT
 ZIP="ChatGPT-Proxy-${VERSION}-Universal.zip"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$STAGE/$ZIP"
 mv -f "$STAGE/$ZIP" "$DIST_DIR/$ZIP"
+(cd "$DIST_DIR" && /usr/bin/shasum -a 256 "$ZIP" > "$ZIP.sha256")
 print "$DIST_DIR/$ZIP"

@@ -33,6 +33,7 @@ let package = Package(
             name: "ChatGPTProxyApp",
             dependencies: ["ChatGPTProxyCore"]
         ),
+        .executableTarget(name: "AppUpdater", dependencies: ["ChatGPTProxyCore"]),
         .executableTarget(name: "DNSProtectionHelper", dependencies: ["ChatGPTProxyCore", "CDNSFirewall"]),
         .testTarget(
             name: "ChatGPTProxyCoreTests",

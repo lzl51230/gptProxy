@@ -89,6 +89,7 @@ internal sealed class Coordinator : IAsyncDisposable
         await mutation.WaitAsync();
         try {
             switch(command) {
+                case "resumeAfterUpdate":
                 case "enable":
                     if(exitRequested)throw new IOException("安装程序正在关闭启动器");
                     await Stop();
@@ -103,6 +104,17 @@ internal sealed class Coordinator : IAsyncDisposable
                     await Transaction(new{op="protection",action="enable",now=Now});
                     if(phase!="enabled")throw new IOException(detail);
                     detail="保护已就绪，等待 ChatGPT 正常重启";
+                    if(command=="resumeAfterUpdate") {
+                        foreach(var process in Process.GetProcessesByName("ChatGPT")) {
+                            using(process) {
+                                if(process.SessionId!=Process.GetProcessById(pid).SessionId)continue;
+                                if(ProcessIdentity.OwnerSid(process.Id)!=ownerSid||!ProcessIdentity.IsChatGPTPackage(ProcessIdentity.PackageFullName(process.Id)))throw new IOException("现有 ChatGPT 进程身份无法验证");
+                            }
+                        }
+                        confirmed=true;detail="更新后保护已恢复，ChatGPT 保持原运行状态";
+                        if(request["paused"]?.GetValue<bool>()!=true)StartMonitor();
+                        else monitorState=new JsonObject{["phase"]="paused",["status"]="节点自动切换已暂停"};
+                    }
                     break;
                 case "confirm":
                     if(pid!=ownerPid||phase!="enabled"||bridge?.Ready!=true)throw new IOException("保护尚未就绪");

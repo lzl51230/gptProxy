@@ -38,11 +38,17 @@ enum LoginLaunchContext {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let model = AppModel()
+    let model: AppModel = {
+#if DEBUG
+        AppUpdateQA.configure()
+#endif
+        return AppModel()
+    }()
     let login = LaunchAtLoginController()
     private lazy var mainWindow = MainWindowController(model: model)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        model.updates.start(model: model)
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -64,6 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var terminating = false
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Update preparation already restored the system and stopped its workers.
+        // Starting another async shutdown inside terminate's nested loop can stall.
+        if model.terminationReady { return .terminateNow }
         guard !terminating else { return .terminateLater }
         terminating = true
         Task {
@@ -89,7 +98,10 @@ struct ChatGPTProxyApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MonitorMenu(monitor: delegate.model.monitor, showMainWindow: delegate.showMainWindow)
+            VStack {
+                MonitorMenu(monitor: delegate.model.monitor, showMainWindow: delegate.showMainWindow)
+                Button("检查更新") { delegate.showMainWindow(); delegate.model.updates.check(port: delegate.model.proxyPort) }
+            }
         } label: {
             Image(nsImage: menuBarIcon)
                 .renderingMode(.original)

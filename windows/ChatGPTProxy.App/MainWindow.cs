@@ -34,6 +34,7 @@ internal sealed partial class MainWindow : Window
     private readonly string settingsPath=Program.UiTesting?Path.Combine(Path.GetTempPath(),"ChatGPTProxy-ui-tests",Environment.ProcessId+".json"):PortableRuntime.SettingsPath;
     public MainWindow()
     {
+        InitializeUpdates();
         BuildInterface();
         repair.Click+=async (_,_)=>{if(busy)return;stickyError=false;busy=true;UpdateBusy();try{
             if(!PortableRuntime.IsPortable||await PortableRuntime.HasSession())await ServiceClient.Call(new JsonObject{["command"]="restore"});
@@ -47,6 +48,7 @@ internal sealed partial class MainWindow : Window
         paused.Click+=async (_,_)=>await SavePreferences();startup.Click+=(_,_)=>{try{SetStartup();SaveSettings();}catch(Exception e){startup.IsChecked=startup.IsChecked!=true;ShowError(e.Message);}};theme.SelectionChanged+=(_,_)=>{ApplyTheme();SaveSettings();};
         tray.Icon=System.Drawing.SystemIcons.Shield;tray.Text="ChatGPT Proxy";tray.Visible=true;
         var menu=new Forms.ContextMenuStrip();menu.Items.Add("设置…",null,(_,_)=>Dispatcher.Invoke(ShowSettings));menu.Items.Add("暂停 / 恢复监控",null,async (_,_)=>await Dispatcher.InvokeAsync(ToggleMonitor));menu.Items.Add("打开",null,(_,_)=>Dispatcher.Invoke(()=>{Show();ActivateWindow();}));menu.Items.Add("恢复 DNS 并退出",null,async (_,_)=>await Dispatcher.InvokeAsync(Exit));tray.ContextMenuStrip=menu;
+        tray.ContextMenuStrip.Items.Insert(0,new Forms.ToolStripMenuItem("检查更新",null,async (_,_)=>{Show();await updates.CheckAsync();}));
         tray.MouseClick+=(_,e)=>{if(e.Button==Forms.MouseButtons.Left)Dispatcher.Invoke(ShowTrayPanel);};
         tray.DoubleClick+=(_,_)=>{Show();ActivateWindow();};Closing+=(_,e)=>{if(!exiting){e.Cancel=true;Hide();}};
         timer.Tick+=async (_,_)=>{UpdateBusy();await Poll();};timer.Start();Loaded+=async (_,_)=>{await RefreshDiagnostics();await Poll();};

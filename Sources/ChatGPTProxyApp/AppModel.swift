@@ -52,6 +52,7 @@ final class AppModel: ObservableObject {
     private var maintenance: Task<Void, Never>?
     private var observations: Set<AnyCancellable> = []
     private var shuttingDown = false
+    private(set) var terminationReady = false
     private var summaryScheduled = false
     private var pendingPortChange = false
     private var operationPort: Int?
@@ -66,6 +67,7 @@ final class AppModel: ObservableObject {
     @Published var proxyPort: Int {
         didSet {
             guard proxyPort != oldValue else { return }
+            updates.cancel()
             pendingPortChange = true
             operationCancelled = true
             recovery.reset()
@@ -111,6 +113,7 @@ final class AppModel: ObservableObject {
         self.refreshAfterProfileConfiguration = refreshAfterProfileConfiguration
         let stored = defaults.integer(forKey: "proxyPort")
         proxyPort = stored > 0 ? stored : Int(ProxyConfiguration.defaultProxyPort)
+        updates.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         clashDNSObservation = dns.$clashCheck.sink { [weak self] _ in self?.scheduleSummary() }
         dnsObservation = dns.$status.sink { [weak self] _ in self?.scheduleSummary() }
         cliObservation = cli.$state.sink { [weak self] _ in self?.scheduleSummary() }
@@ -221,7 +224,7 @@ final class AppModel: ObservableObject {
     }
 
     var isBusy: Bool {
-        activeOperation != nil
+        activeOperation != nil || updates.installing
     }
 
     var protectionReady: Bool { dns.status.isEnabled && cli.isReady && !applyingProtection }
@@ -327,7 +330,45 @@ final class AppModel: ObservableObject {
         updateSummary()
     }
 
+    let updates = AppUpdates()
+    func prepareForUpdate() async throws {
+        guard activeOperation == nil else { throw CocoaError(.userCancelled) }
+        shuttingDown = true
+        maintenance?.cancel()
+        await maintenance?.value
+        do { try await dns.restore() }
+        catch {
+            shuttingDown = false
+            maintenance = Task { [weak self] in
+                while !Task.isCancelled { await self?.maintainProtection(); try? await Task.sleep(for: .seconds(2)) }
+            }
+            throw error
+        }
+        await monitor.stopAndWait()
+        await cli.stopAndWait()
+        await relayLifecycle.stopAndWait()
+        terminationReady = true
+    }
+    func resumeAfterFailedUpdate() {
+        guard shuttingDown else { return }
+        terminationReady = false
+        shuttingDown = false
+        maintenance = Task { [weak self] in
+            while !Task.isCancelled { await self?.maintainProtection(); do { try await Task.sleep(for: .seconds(2)) } catch { return } }
+        }
+    }
+    func resumeProtectionAfterUpdate() async {
+        guard !protectionPaused else { return }
+        // The new bundle may carry a newer DNS helper. Background maintenance
+        // cannot authorize installing it, so resume through the explicit path.
+        while activeOperation != nil {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        }
+        guard !shuttingDown, !dns.status.isEnabled else { return }
+        await enableDNSProtection()
+    }
     func shutdown() async {
+        updates.stop()
         shuttingDown = true
         operationCancelled = true
         recovery.reset()
@@ -346,6 +387,7 @@ final class AppModel: ObservableObject {
         await monitor.stopAndWait()
         await cli.stopAndWait()
         await relayLifecycle.stopAndWait()
+        terminationReady = true
     }
 
     func enableDNSProtection() async {
@@ -575,7 +617,7 @@ final class AppModel: ObservableObject {
     }
 
     private func beginOperation(phase newPhase: Phase) -> UUID? {
-        guard activeOperation == nil, !shuttingDown else { return nil }
+        guard activeOperation == nil, !shuttingDown, !updates.installing else { return nil }
         let operation = UUID()
         activeOperation = operation
         operationCancelled = false

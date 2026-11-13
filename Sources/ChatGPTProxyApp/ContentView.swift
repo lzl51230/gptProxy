@@ -20,6 +20,7 @@ struct ContentView: View {
             Divider()
             MonitorStatusView(monitor: model.monitor)
             actionSection
+            AppUpdatePanel(updates: model.updates, model: model)
         }
         .padding(28)
         .task {
@@ -253,6 +254,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             Form {
+                Section("应用更新") { AppUpdatePanel(updates: model.updates, model: model) }
                 Section("外观") {
                     Picker("颜色主题", selection: $theme) {
                         ForEach(AppTheme.allCases) { theme in

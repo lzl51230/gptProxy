@@ -13,6 +13,7 @@ mod profile;
 mod protection;
 mod relay;
 mod workflow;
+mod updates;
 use serde_json::{Value, json};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -91,6 +92,7 @@ pub unsafe extern "C" fn cgp_core_call(
         let request: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let engine = unsafe { &*engine };
         match request["op"].as_str().ok_or("Missing operation")? {
+            "updateRelease" => updates::select(&request),
             "firewallStart" => {
                 let mut slot = engine
                     .firewall

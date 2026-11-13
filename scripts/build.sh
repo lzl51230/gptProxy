@@ -23,6 +23,9 @@ ARM_PRODUCTS=$(swift build -c release --arch arm64 --scratch-path "$BUILD_DIR/ar
 INTEL_PRODUCTS=$(swift build -c release --arch x86_64 --scratch-path "$BUILD_DIR/x86_64" --show-bin-path)
 /usr/bin/lipo -create "$ARM_PRODUCTS/ChatGPTProxyApp" "$INTEL_PRODUCTS/ChatGPTProxyApp" -output "$MACOS_DIR/ChatGPTProxyLauncher"
 /usr/bin/lipo -create "$ARM_PRODUCTS/DNSProtectionHelper" "$INTEL_PRODUCTS/DNSProtectionHelper" -output "$RESOURCES_DIR/DNSProtectionHelper"
+/usr/bin/lipo -create "$ARM_PRODUCTS/AppUpdater" "$INTEL_PRODUCTS/AppUpdater" -output "$RESOURCES_DIR/AppUpdater"
+/bin/chmod 755 "$RESOURCES_DIR/AppUpdater"
+/usr/bin/codesign --force --sign - "$RESOURCES_DIR/AppUpdater"
 /bin/chmod 755 "$RESOURCES_DIR/DNSProtectionHelper"
 /usr/bin/codesign --force --sign - "$RESOURCES_DIR/DNSProtectionHelper"
 /bin/chmod 755 "$MACOS_DIR/ChatGPTProxyLauncher"
@@ -32,6 +35,13 @@ INTEL_PRODUCTS=$(swift build -c release --arch x86_64 --scratch-path "$BUILD_DIR
 /bin/cp "$PROJECT_DIR/Resources/THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
 RUST_SYSROOT=$(cd "$PROJECT_DIR" && "$HOME/.cargo/bin/rustc" --print sysroot)
 /bin/cp "$RUST_SYSROOT/share/doc/rust/COPYRIGHT-library.html" "$RESOURCES_DIR/Rust-Std-Notices.html"
+python3 - "$APP_DIR" <<'PYMANIFEST'
+import json, pathlib, plistlib, sys
+app = pathlib.Path(sys.argv[1])
+version = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleShortVersionString']
+files = sorted(str(p.relative_to(app)) for p in app.rglob('*') if p.is_file())
+(app / 'Contents/Resources/update-manifest.json').write_text(json.dumps({'format':1,'version':version,'platform':'macos-universal','files':files}))
+PYMANIFEST
 /usr/bin/codesign --force --deep --sign - "$APP_DIR"
 
 print "$APP_DIR"

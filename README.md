@@ -30,7 +30,7 @@ macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Ru
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.9-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.4.0-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 
@@ -111,3 +111,17 @@ python3 scripts/qa-cli-memory.py --seconds 1800 --output dist/memory-soak
 输出目录须不存在；结果写入 `summary.json` 和 `samples.jsonl`。短时间冒烟可使用 `--seconds 20`。
 
 2.3.3 的复现、30 分钟压力测试和本机更新结果见[内存修复验证记录](docs/validation-memory-2026-11-06.md)。
+
+## 应用内更新
+
+启动后及每 6 小时检查 GitHub 最新正式版本；主窗口、设置和菜单栏／托盘提供“检查更新”。发现新版后，点击“更新并重启”下载、校验并安装。更新请求及下载重定向强制使用设置中的本地 SOCKS5 端口，默认 7890；代理失败不会回退直连。下载期间可以取消。
+
+更新只重启 ChatGPT Proxy，不退出或启动 ChatGPT。安装前恢复 DNS、Clash 临时配置和防火墙规则；恢复失败就中止更新。代理连接会短暂中断。更新后保留保护意图、监控暂停选择、主题、地区、登录启动设置及 Windows 便携目录中的 `Data`。Windows 恢复保护可能需要再次批准临时服务的 UAC 授权；macOS 配套 DNS 辅助程序变化时也会请求系统授权。取消后保留已更新程序，窗口显示保护恢复待处理。
+
+目录可写时直接替换，需要额外权限时请求系统授权；取消安装授权保留旧版。新版未完成启动健康确认会回滚旧版；网络不可用单独显示，不作为程序回滚条件。macOS 更新包继续使用临时签名，不包含 Developer ID 公证。
+
+首次需手动安装包含更新器的正式分发包，此后的 Release 必须提供对应 ZIP、`.sha256`、包内更新清单和更新辅助程序。Windows 应用内安装面向便携版，旧安装版先按原流程迁移。开发目录直接运行不作为安装目标。
+
+macOS 更新事务保存在 `~/Library/Caches/ChatGPT Proxy/Updates/<事务>/`，Windows 位于 `%LOCALAPPDATA%\ChatGPT Proxy\Updates\<事务>\`。启动时尝试恢复未完成事务。若安装目录在中断时缺失，先确认启动器已退出，再运行事务目录中的 `AppUpdater recover <transaction.json完整路径>`（macOS）或 `ChatGPTProxy.Updater.exe recover <transaction.json完整路径>`（Windows）。保留事务和 `.update-backup`，直至恢复成功。
+
+可用 `python3 scripts/qa-update-worker-macos.py` 在临时目录验证实际替换、启动失败回滚和安装目录缺失时恢复；先执行 `swift build --product AppUpdater`。脚本使用模拟应用，不修改正式安装或系统网络配置。当前验证范围见 [更新验收记录](docs/validation-updates-2026-11-13.md)。
