@@ -11,6 +11,10 @@ internal sealed class ProxyBridgeAdapter : IAsyncDisposable
     private Task[] readers=[];
     private readonly NativeCore core;
     private readonly object gate=new();
+    private readonly Queue<string> recentLines=new();
+    private int recentBytes;
+    public string RecentLog {get{lock(gate)return string.Join("\n",recentLines);}}
+    private void Record(string line){if(line.Length>2048)line=line[..2048];recentLines.Enqueue(line);recentBytes+=System.Text.Encoding.UTF8.GetByteCount(line)+1;while(recentBytes>8000){recentBytes-=System.Text.Encoding.UTF8.GetByteCount(recentLines.Dequeue())+1;}}
     private JsonNode output=new JsonObject();
     private readonly Stopwatch clock=new();
     private JsonNode Status(){var alive=process is {HasExited:false};return JsonNode.Parse(core.Call(new{op="cliStatus",platform="windows",state=output,alive,elapsed=clock.Elapsed.TotalSeconds,timeout=10,exitCode=process is {HasExited:true}?process.ExitCode:-1}).GetRawText())!;}
@@ -49,7 +53,7 @@ internal sealed class ProxyBridgeAdapter : IAsyncDisposable
         using var decoder=new NativeCore();var bytes=new byte[16384];
         try {while(true) {
             var count=await stream.ReadAsync(bytes);var result=decoder.Call(new{op="lineChunk",bytes=bytes.Take(count).Select(b=>(int)b).ToArray(),finish=count==0});
-            lock(gate){foreach(var line in result.GetProperty("lines").EnumerateArray())output=JsonNode.Parse(core.Call(new{op="cliConsume",platform="windows",state=output,line=line.GetString()}).GetRawText())!;}
+            lock(gate){foreach(var line in result.GetProperty("lines").EnumerateArray()){Record(line.GetString()??"");output=JsonNode.Parse(core.Call(new{op="cliConsume",platform="windows",state=output,line=line.GetString()}).GetRawText())!;}}
             if(count==0)break;
         }}catch(Exception e){lock(gate)output["failure"]="CLI 输出读取失败: "+e.Message;}
     }

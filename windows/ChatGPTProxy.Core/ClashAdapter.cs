@@ -7,8 +7,9 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using ChatGPTProxy.Core;
 
-namespace ChatGPTProxy.Service;
-internal sealed class ClashAdapter : IDisposable
+namespace ChatGPTProxy.Core;
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
+public sealed class ClashAdapter : IDisposable
 {
     public string Pipe {get;}
     public string Root {get;}

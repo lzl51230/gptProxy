@@ -320,7 +320,10 @@
         }
       },
       "chatgptproxy.core": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "System.Management": "[10.0.0, )"
+        }
       }
     },
     "net10.0-windows7.0/win-x64": {

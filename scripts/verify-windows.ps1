@@ -18,4 +18,9 @@ if($LASTEXITCODE){throw 'Binding tests failed'}
 if($LASTEXITCODE){throw 'Native SOCKS/TLS ABI tests failed'}
 & python "$root\scripts\qa-core-dns.py" --library "$root\build\rust\x86_64-pc-windows-msvc\release\gpt_proxy_core.dll"
 if($LASTEXITCODE){throw 'DNS ABI tests failed'}
-if(!$CoreOnly){ & "$PSScriptRoot\build-windows.ps1" -SkipCore }
+if(!$CoreOnly){
+ & "$PSScriptRoot\build-windows.ps1" -SkipCore
+ $visuals=Join-Path $root 'build\windows-ui-visuals'
+ $ui=Start-Process (Join-Path $root 'build\windows\app\ChatGPTProxy.App.exe') -ArgumentList @('--qa-ui',('"'+$visuals+'"')) -Wait -PassThru
+ if($ui.ExitCode){throw "WPF visual checks failed; see $visuals"}
+}

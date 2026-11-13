@@ -84,6 +84,7 @@ internal sealed class Coordinator : IAsyncDisposable
     {
         var command=request["command"]?.GetValue<string>();
         if(command=="status")return Status();
+        if(command=="logs")return new JsonObject{["text"]=bridge?.RecentLog??"暂无代理日志"};
         if(command=="heartbeat"){Heartbeat(pid);return Status();}
         await mutation.WaitAsync();
         try {

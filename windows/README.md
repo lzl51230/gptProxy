@@ -56,3 +56,13 @@ python scripts/qa-core-dns.py --library build/rust/x86_64-pc-windows-msvc/releas
 Run that check with protection off and port 53 free. It temporarily blocks external plaintext DNS and restores filtering in `finally`. The installed launcher's `--qa-smoke` exercises preparation, MSIX restart, live observation and restoration. `--qa-protection-hold` is a two-minute recovery test session; it restores on normal completion and lets the service watchdog recover if the test launcher is terminated.
 
 While the monitor is running, a direct GLOBAL selection of DIRECT (case insensitive) starts node recovery immediately, even when the connection is healthy. Candidates belong to the currently selected Clash Party profile and follow enabled region order. With no enabled regions, the monitor asks the user to select regions. Nested selections and custom Direct-type nodes do not trigger this rule. Existing cooldown, candidate validation and protection lifecycle remain in effect.
+
+## Desktop interface
+
+The Windows launcher follows the macOS main-window, settings, setup and monitor-panel layout. Windows-specific status describes the temporary recovery service instead of a macOS network extension. Opening settings or refreshing diagnostics does not enable protection or request elevation. Protection activation retains the existing ChatGPT restart/confirmation and DNS recovery flow.
+
+Appearance supports System, Dark Modern, Light Modern, Monokai and Solarized Dark. `themeId` is persisted beside the existing settings; legacy numeric themes 0/1/2 migrate to system/light/dark. Login startup uses `--background` and keeps the launcher in the tray. Closing the main window leaves protection active; tray exit restores DNS first.
+
+`verify-windows.ps1` also runs the WPF `--qa-ui <output-directory>` checks. These render all themes and main/settings/setup/tray surfaces, check old theme migration, busy controls and stable tray action positions, and write PNGs under `build/windows-ui-visuals`. They do not activate protection. The 150%/200% images are rendering checks, not a substitute for changing the desktop's actual display scaling. `--qa-ui` uses temporary settings and never changes the user's saved theme.
+
+The log window reads a bounded in-memory tail of the current ProxyBridge CLI session through the authenticated local pipe. Logs are not persisted and are unavailable after that session ends.
