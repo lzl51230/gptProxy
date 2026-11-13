@@ -1,4 +1,4 @@
-#define ProductVersion "2.3.3"
+#define ProductVersion "2.3.8"
 [Setup]
 AppId={{ECA2BE54-10F8-4FAE-BC1D-83279668399C}
 AppName=ChatGPT Proxy

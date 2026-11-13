@@ -67,10 +67,10 @@ internal sealed class ClashAdapter : IDisposable
         response.EnsureSuccessStatusCode();
         using var input=await response.Content.ReadAsStreamAsync();using var output=new MemoryStream();var bytes=new byte[16384];
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(12));int count;
-        while((count=await input.ReadAsync(bytes,timeout.Token))>0){if(output.Length+count>4*1024*1024)throw new IOException("Clash response too large");output.Write(bytes,0,count);}
+        while((count=await input.ReadAsync(bytes,timeout.Token))>0){ConfigurationFiles.ValidateSize(output.Length+count,ConfigurationFiles.MaximumResponseSize,"Clash 控制接口响应");output.Write(bytes,0,count);}
         return output.Length==0?null:JsonNode.Parse(output.ToArray());
     }
-    public string Source()=>ProcessIdentity.AsProcessUser(Pid,()=>{var path=Path.Combine(Root,"work","config.yaml");if(new FileInfo(path).Length>4*1024*1024)throw new IOException("Clash configuration too large");return File.ReadAllText(path,Encoding.UTF8);});
+    public string Source()=>ProcessIdentity.AsProcessUser(Pid,()=>ConfigurationFiles.ReadSource(Path.Combine(Root,"work","config.yaml")));
     public string Generation()=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Source())));
     public async Task<JsonObject> Snapshot()
     {

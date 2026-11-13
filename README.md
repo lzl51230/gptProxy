@@ -30,7 +30,7 @@ macOS 静态链接 Rust，Windows 在启动器和 LocalSystem 服务中加载 Ru
 make verify
 ```
 
-构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.7-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
+构建后的应用位于 `build/ChatGPT Proxy.app`，分发文件为 `dist/ChatGPT-Proxy-2.3.8-Universal.zip`。ZIP 只包含 ChatGPT Proxy（含 DNS 辅助服务）；解压后将应用放入 `/Applications`。不包含 ChatGPT、ProxyBridge 或它们的安装包。
 
 应用检测 ProxyBridge 是否安装完整且版本为 4.1.1；不满足时，状态行显示“修复”。点击后通过设置中的本地 SOCKS5 代理在线下载固定版本官方安装包，校验 SHA-256 与签名团队，再通过 macOS 命令行安装器安装。管理员认证由系统完成；成功后自动重新检测并启用代理，不自动打开或重启 GPT。下载失败请检查本地代理设置，可重试；没有直连回退。版本正确但扩展待授权时，使用网络扩展设置入口完成授权。
 

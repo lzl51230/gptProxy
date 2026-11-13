@@ -13,7 +13,11 @@ Install Rust through rustup (the repository pins the toolchain), MSVC C++ Build 
 ./scripts/package-windows.ps1 -SkipBuild
 ```
 
-Packaging additionally needs Inno Setup 7 x64. The output is `dist/ChatGPT-Proxy-2.3.3-Windows-x64-Setup.exe`. The installer contains both .NET runtimes, the shared Rust DLL and notices. The Rust DLL statically links the MSVC runtime; end users do not need MSVC Build Tools, the VC++ redistributable or OpenSSL. It does not contain ChatGPT, Clash Party or ProxyBridge. The launcher can download and install the pinned official ProxyBridge 4.1.1 release through the selected local SOCKS port, checking the release hash and installed component hashes.
+Packaging additionally needs Inno Setup 7 x64. The output is `dist/ChatGPT-Proxy-2.3.8-Windows-x64-Setup.exe`. The installer contains both .NET runtimes, the shared Rust DLL and notices. The Rust DLL statically links the MSVC runtime; end users do not need MSVC Build Tools, the VC++ redistributable or OpenSSL. It does not contain ChatGPT, Clash Party or ProxyBridge. The launcher can download and install the pinned official ProxyBridge 4.1.1 release through the selected local SOCKS port, checking the release hash and installed component hashes.
+
+Clash configuration files and subscription source files support up to 32 MiB per file. Reads are bounded, recovery records allow up to 256 MiB, and oversized input reports its size limit. Configuration reads still impersonate the Clash process user.
+
+The `Windows release package` GitHub Actions workflow can build an existing `vX.Y.Z` tag, run the same verification, and produce the versioned installer with a SHA-256 file. It adjusts only Windows version metadata to match the requested tag and records the source commit in the workflow artifact.
 
 NuGet lock files and the .NET runtime version are pinned. To deliberately update dependencies, restore with `--force-evaluate`, review all four lock files, then run verification again. Do not overwrite WPF runtime files with the service publish output.
 

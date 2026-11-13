@@ -53,8 +53,7 @@ internal sealed class Coordinator : IAsyncDisposable
         JsonNode? journal=null;
         try {
             if(File.Exists(journalPath)) {
-                if(new FileInfo(journalPath).Length>8*1024*1024)throw new IOException("Recovery journal too large; retained");
-                journal=JsonNode.Parse(await File.ReadAllTextAsync(journalPath)) ?? throw new IOException("Empty recovery journal; retained");
+                journal=JsonNode.Parse(ConfigurationFiles.ReadRecovery(journalPath)) ?? throw new IOException("Empty recovery journal; retained");
             }
             Call(new{op="protection",action="load",journal});
         } catch(Exception e){recoveryBlocked=e.Message;phase="failed";detail=e.Message;return;}
@@ -159,7 +158,9 @@ internal sealed class Coordinator : IAsyncDisposable
                 return new JsonObject{["platform"]="windows",["ownerSid"]=ownerSid,["pipe"]=adapter.Pipe,["root"]=adapter.Root,["corePID"]=adapter.Pid,["coreStartTicks"]=adapter.StartTicks,["sourceGeneration"]=sourceGeneration,["source"]=adapter.Source(),["general"]=general!.ToJsonString(),["snapshot"]=await adapter.Snapshot(),["selection"]=await adapter.Selections(),["services"]=await SystemAdapters.DnsSnapshot()};
             case "persist":
                 var temporary=journalPath+".tmp";
-                using(var stream=new FileStream(temporary,FileMode.Create,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough)) {var bytes=System.Text.Encoding.UTF8.GetBytes(journal!.ToJsonString());await stream.WriteAsync(bytes);stream.Flush(true);}
+                var bytes=System.Text.Encoding.UTF8.GetBytes(journal!.ToJsonString());
+                ConfigurationFiles.ValidateSize(bytes.Length,ConfigurationFiles.MaximumRecoverySize,"DNS 恢复记录");
+                using(var stream=new FileStream(temporary,FileMode.Create,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough)) {await stream.WriteAsync(bytes);stream.Flush(true);}
                 File.Move(temporary,journalPath,true);return null;
             case "frontendStart": core.Call(new{op="dnsStart",listenPort=53,upstreamPort=17853});return null;
             case "frontendStop": core.Call(new{op="dnsStop"});return null;
