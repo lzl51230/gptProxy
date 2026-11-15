@@ -76,17 +76,19 @@ final class DNSProtectionTests: XCTestCase {
         XCTAssertThrowsError(try DNSProtectionConfiguration.readSource(at: file))
     }
 
-    func testEveryOrdinaryResolutionPathUsesGlobalDoHWithoutChangingNodesOrRules() throws {
+    func testProtectedDomainsUseGlobalDoHAndOtherDNSPoliciesArePreserved() throws {
         let original = try XCTUnwrap(Yams.load(yaml: fixture) as? [String: Any])
         let result = try XCTUnwrap(Yams.load(yaml: DNSProtectionConfiguration.protectedYAML(fixture)) as? [String: Any])
         let dns = try XCTUnwrap(result["dns"] as? [String: Any])
-        XCTAssertEqual(dns["nameserver"] as? [String], DNSProtectionConfiguration.nameServers)
-        XCTAssertEqual(dns["direct-nameserver"] as? [String], DNSProtectionConfiguration.nameServers)
+        XCTAssertEqual(dns["nameserver"] as? [String], ["223.5.5.5"])
+        XCTAssertEqual(dns["direct-nameserver"] as? [String], ["system"])
         XCTAssertEqual(dns["enhanced-mode"] as? String, "redir-host")
         XCTAssertEqual(dns["listen"] as? String, "127.0.0.1:17853")
-        XCTAssertEqual((dns["fallback"] as? [String])?.count, 0)
-        XCTAssertEqual((dns["nameserver-policy"] as? [String: Any])?.count, 0)
-        XCTAssertEqual((dns["proxy-server-nameserver-policy"] as? [String: Any])?.count, 0)
+        XCTAssertEqual(dns["fallback"] as? [String], ["8.8.8.8"])
+        let policy = try XCTUnwrap(dns["nameserver-policy"] as? [String: Any])
+        XCTAssertEqual(policy["rule-set:gptproxy-dns"] as? [String], DNSProtectionConfiguration.nameServers)
+        XCTAssertEqual(policy["+.example.com"] as? String, "114.114.114.114")
+        XCTAssertEqual(dns["proxy-server-nameserver-policy"] as? [String:String], ["proxy.example":"114.114.114.114"])
         XCTAssertEqual(dns["proxy-server-nameserver"] as? [String], ["https://dns.alidns.com/dns-query"])
         XCTAssertEqual(result["ipv6"] as? Bool, false)
         XCTAssertEqual(dns["ipv6"] as? Bool, false)

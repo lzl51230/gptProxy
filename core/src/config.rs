@@ -39,6 +39,43 @@ fn encrypted(value: &str, literal: bool) -> bool {
     }
 }
 
+// OpenAI Help Center article 9247338. Each entry includes the apex and all descendants.
+pub fn protected_domains() -> Vec<&'static str> {
+    include_str!("../resources/gpt-dns-domains.txt").lines().collect()
+}
+
+fn protect_domain_policy(config: &mut Value) -> Result<(), String> {
+    // A rule-set at the front takes precedence even over exact host policies and
+    // geosite matches. Plain suffix keys in the same Mihomo trie do not.
+    let providers = config.as_object_mut().unwrap()
+        .entry("rule-providers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("Clash rule-providers 必须为映射")?;
+    let mut name = "gptproxy-dns".to_owned();
+    while providers.contains_key(&name) {
+        name.push('_');
+    }
+    let suffixes: Vec<_> = protected_domains().into_iter()
+        .map(|domain| format!("+.{domain}"))
+        .collect();
+    providers.insert(name.clone(), json!({"type":"inline","behavior":"domain","payload":suffixes}));
+
+    let mut policy = serde_json::Map::new();
+    policy.insert(format!("rule-set:{name}"), json!([
+        "https://1.1.1.1/dns-query#GLOBAL",
+        "https://8.8.8.8/dns-query#GLOBAL"
+    ]));
+    let original = config["dns"]["nameserver-policy"].take();
+    match original {
+        Value::Object(entries) => policy.extend(entries),
+        Value::Null => {}
+        _ => return Err("Clash nameserver-policy 必须为映射".into()),
+    }
+    config["dns"]["nameserver-policy"] = Value::Object(policy);
+    Ok(())
+}
+
 const BOOTSTRAP_LISTS: [(&str, bool); 2] =
     [("default-nameserver", true), ("proxy-server-nameserver", false)];
 
@@ -174,28 +211,13 @@ pub fn dispatch(request: &Value) -> Result<Value, String> {
                 ("ipv6", json!(false)),
                 ("listen", json!("127.0.0.1:17853")),
                 ("enhanced-mode", json!("redir-host")),
-                ("prefer-h3", json!(false)),
-                ("respect-rules", json!(false)),
-                (
-                    "nameserver",
-                    json!([
-                        "https://1.1.1.1/dns-query#GLOBAL",
-                        "https://8.8.8.8/dns-query#GLOBAL"
-                    ]),
-                ),
-                (
-                    "direct-nameserver",
-                    json!([
-                        "https://1.1.1.1/dns-query#GLOBAL",
-                        "https://8.8.8.8/dns-query#GLOBAL"
-                    ]),
-                ),
-                ("nameserver-policy", json!({})),
-                ("proxy-server-nameserver-policy", json!({})),
-                ("fallback", json!([])),
             ] {
                 dns.insert(key.into(), value);
             }
+            if dns.get("nameserver").is_none_or(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty)) {
+                dns.insert("nameserver".into(), json!(["system"]));
+            }
+            protect_domain_policy(&mut config)?;
             serialize(&config)
         }
         _ => Err("Unknown configuration operation".into()),
@@ -220,6 +242,22 @@ mod tests {
         assert_eq!(dispatch(&json!({"op":"bootstrapRepair","source":repaired})).unwrap()["replacements"], json!({}));
         assert!(dispatch(&json!({"op":"protectedYAML","source":source,"bootstrapRepair":{"default-nameserver":["system"]}})).is_err());
     }
+    #[test]
+    fn domain_rules_precede_existing_policies_and_preserve_their_order() {
+        let source = "mode: global\nrule-providers: {gptproxy-dns: {type: http}}\ndns:\n  default-nameserver: [tls://1.1.1.1]\n  proxy-server-nameserver: [tls://dns.example]\n  nameserver: [system]\n  fallback: [8.8.8.8]\n  nameserver-policy: {'rule-set:corp': system, 'api.openai.com': '1.1.1.1', '+.lan': system}\n";
+        let config = yaml(&dispatch(&json!({"op":"protectedYAML","source":source})).unwrap()).unwrap();
+        let dns = &config["dns"];
+        assert_eq!(dns["nameserver"], json!(["system"]));
+        assert_eq!(dns["fallback"], json!(["8.8.8.8"]));
+        let keys: Vec<_> = dns["nameserver-policy"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["rule-set:gptproxy-dns_", "rule-set:corp", "api.openai.com", "+.lan"]);
+        let payload = config["rule-providers"]["gptproxy-dns_"]["payload"].as_array().unwrap();
+        for domain in protected_domains() {
+            assert!(payload.contains(&json!(format!("+.{domain}"))));
+        }
+        assert!(!payload.contains(&json!("+.cloudflare.com")));
+    }
+
     #[test]
     fn resolver_validation() {
         assert!(encrypted("https://1.1.1.1/dns-query", true));

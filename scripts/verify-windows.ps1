@@ -1,6 +1,7 @@
 param([switch]$CoreOnly)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
+& "$PSScriptRoot\test-nrpt.ps1"
 Push-Location "$root\core"
 try {
  & cargo test --locked --target-dir "$root\build\rust"

@@ -28,7 +28,7 @@ impl Protection {
                     return Err("Protection transaction busy".into());
                 }
                 let journal = &r["journal"];
-                if !journal.is_null() && journal["version"] != 1 {
+                if !journal.is_null() && journal["version"] != 1 && journal["version"] != 2 {
                     return Err("Unknown DNS recovery journal version; retained for recovery by its original helper".into());
                 }
                 self.journal = journal.clone();
@@ -149,17 +149,15 @@ impl Protection {
         self.restoring = true;
         self.phase = "restoring".into();
         if !self.journal.is_null() {
-            self.queue = VecDeque::from(
-                [
-                    "firewallDisable",
-                    "systemDNSRestore",
-                    "clashRestorePrepare",
-                    "frontendStop",
-                    "cacheFlush",
-                    "finishRestore",
-                ]
-                .map(str::to_owned),
-            );
+            if self.journal["version"] == 1 {
+                self.queue.extend(["firewallDisable", "systemDNSRestore"].map(str::to_owned));
+            } else {
+                self.queue.push_back("domainDNSRestore".into());
+            }
+            if self.journal["clashChanged"] == true {
+                self.queue.push_back("clashRestorePrepare".into());
+            }
+            self.queue.extend(["frontendStop", "cacheFlush", "finishRestore"].map(str::to_owned));
         }
     }
     fn completed(&mut self, op: &str, value: &Value) -> Result<(), String> {
@@ -172,8 +170,8 @@ impl Protection {
                 {
                     return Err("DNS 保护要求全局模式并选择真实代理节点".into());
                 }
-                if value["services"].as_array().is_none_or(Vec::is_empty) {
-                    return Err("没有可接管的网络接口".into());
+                if value["dnsTransaction"].as_str().is_none_or(str::is_empty) {
+                    return Err("缺少域名 DNS 恢复事务标识".into());
                 }
                 let original = crate::config::dispatch(
                     &json!({"op":"runtimeYAML","source":value["source"],"general":value["general"]}),
@@ -185,50 +183,32 @@ impl Protection {
                     &json!({"op":"runtimeIPv6","general":value["general"]}),
                 )?;
                 self.journal = value.clone();
-                self.journal["version"] = json!(1);
+                self.journal["version"] = json!(2);
+                self.journal["domains"] = json!(crate::config::protected_domains());
                 self.journal["originalYAML"] = original;
                 self.journal["originalIPv6"] = ipv6;
                 // Mark intended writes before they occur: a lost acknowledgement must still restore them.
+                self.journal["clashChanged"] = json!(false);
+                self.journal["ipv4PolicyApplied"] = json!(false);
+                self.journal["selectionApplied"] = json!(false);
+                self.queue.push_back("persist".into());
+                self.queue.push_back("domainDNSCheck".into());
+                if value["platform"] == "windows" {
+                    self.queue.push_back("frontendStart".into());
+                }
+                self.queue.extend(["clashApply", "dnsReady", "domainDNSApply", "cacheFlush", "verify", "enabled"].map(str::to_owned));
+            }
+            "domainDNSCheck" => {
                 self.journal["clashChanged"] = json!(true);
                 self.journal["ipv4PolicyApplied"] = json!(true);
-                self.journal["selectionApplied"] = json!(false);
-                self.queue = VecDeque::from(
-                    [
-                        "persist",
-                        "frontendStart",
-                        "clashApply",
-                        "dnsReady",
-                        "systemDNSApply",
-                        "firewallEnable",
-                        "cacheFlush",
-                        "verify",
-                        "enabled",
-                    ]
-                    .map(str::to_owned),
-                );
-            }
-            "firewallEnable" => {
-                if let Some(token) = value.get("firewallToken") {
-                    self.journal["firewallToken"] = token.clone();
-                }
+                self.queue.push_front("persist".into());
             }
             "clashApply" => {
                 self.journal["selectionApplied"] = json!(true);
                 self.queue.push_front("persist".into());
             }
             "enabled" => self.phase = "enabled".into(),
-            "verify" => {
-                self.verify_failures = 0;
-                if let Some(additions) = value["newServices"].as_array().filter(|a| !a.is_empty()) {
-                    self.journal["services"]
-                        .as_array_mut()
-                        .ok_or("Missing saved interfaces")?
-                        .extend(additions.iter().cloned());
-                    for action in ["verify", "systemDNSApply", "persist"] {
-                        self.queue.push_front(action.into());
-                    }
-                }
-            }
+            "verify" => self.verify_failures = 0,
             "clashRestorePrepare" => {
                 if !value.is_null() && self.journal["clashChanged"] == true {
                     self.restore_selection = if self.journal["selectionApplied"] == false {
@@ -313,8 +293,9 @@ mod tests {
         let inspection = crate::config::dispatch(&json!({"op":"bootstrapRepair","source":plain,"saved":"dns: {default-nameserver: [system]}"})).unwrap();
         p.completed("preflight", &json!({
             "source":plain, "general":"ipv6: true", "snapshot":{"mode":"global","current":"node"},
-            "services":[{"id":"wifi"}], "bootstrapRepair":inspection["replacements"]
+            "dnsTransaction":"test", "bootstrapRepair":inspection["replacements"]
         })).unwrap();
+        p.completed("domainDNSCheck", &Value::Null).unwrap();
         let parse_dns = |value: &Value| -> Value {
             serde_yaml_ng::from_str::<Value>(value.as_str().unwrap()).unwrap()["dns"].clone()
         };
@@ -336,6 +317,7 @@ mod tests {
     fn interrupted_reload_restores_saved_selection_but_enabled_sessions_preserve_user_choice() {
         for applied in [false, true] {
             let (mut p, _) = prepared();
+            p.journal["clashChanged"] = json!(true);
             p.journal["selection"] = json!({"GLOBAL":"original"});
             p.journal["selectionApplied"] = json!(applied);
             p.completed("clashRestorePrepare", &json!({"general":"{\"ipv6\":false}","sourceChanged":false,"selection":{"GLOBAL":"current"}})).unwrap();
@@ -379,7 +361,7 @@ mod tests {
             .unwrap();
         let state=protection.dispatch(&json!({"action":"complete","id":state["effect"]["id"],"value":{
             "source":"mode: global\nipv6: true\ndns:\n  enable: true\n  default-nameserver: [https://1.1.1.1/dns-query]\n  proxy-server-nameserver: [https://1.1.1.1/dns-query]\n", "general":"{\"mode\":\"global\",\"ipv6\":true}",
-            "snapshot":{"mode":"global","current":"node"},"services":[{"id":"original","Tcpip":""}]
+            "snapshot":{"mode":"global","current":"node"},"platform":"windows","dnsTransaction":"test"
         }})).unwrap();
         (protection, state)
     }
@@ -394,14 +376,16 @@ mod tests {
             "frontendStart",
             "clashApply",
             "dnsReady",
-            "systemDNSApply",
-            "firewallEnable",
+            "domainDNSCheck",
+            "domainDNSApply",
             "cacheFlush",
             "verify",
         ] {
             let (mut p, mut state) = prepared();
             assert_eq!(state["effect"]["op"], "persist");
-            assert_eq!(state["effect"]["journal"]["clashChanged"], true);
+            assert_eq!(state["effect"]["journal"]["clashChanged"], false);
+            assert_eq!(state["effect"]["journal"]["version"], 2);
+            assert_eq!(state["effect"]["journal"]["domains"], json!(crate::config::protected_domains()));
             while state["effect"]["op"] != failed {
                 state = complete(&mut p, &state);
             }
@@ -411,8 +395,8 @@ mod tests {
                 operations.push(state["effect"]["op"].as_str().unwrap().to_owned());
                 state = complete(&mut p, &state);
             }
-            assert!(operations.contains(&"systemDNSRestore".to_owned()));
-            assert!(operations.contains(&"firewallDisable".to_owned()));
+            assert!(operations.contains(&"domainDNSRestore".to_owned()));
+            assert!(!operations.contains(&"firewallDisable".to_owned()));
             assert_eq!(state["hasJournal"], true);
             state = p.dispatch(&json!({"action":"restore"})).unwrap();
             while state["done"] != true {
@@ -423,7 +407,7 @@ mod tests {
         }
     }
     #[test]
-    fn watchdog_renews_owner_and_journals_hotplug_before_mutation() {
+    fn watchdog_does_not_change_new_network_adapters() {
         let (mut p, mut state) = prepared();
         while state["done"] != true {
             state = complete(&mut p, &state);
@@ -435,23 +419,11 @@ mod tests {
             .unwrap();
         assert_eq!(state["effect"]["op"], "verify");
         state=p.dispatch(&json!({"action":"complete","id":state["effect"]["id"],"value":{"newServices":[{"id":"new"}]}})).unwrap();
-        assert_eq!(state["effect"]["op"], "persist");
-        assert_eq!(
-            state["effect"]["journal"]["services"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-        state = complete(&mut p, &state);
-        assert_eq!(state["effect"]["op"], "systemDNSApply");
-        while state["done"] != true {
-            state = complete(&mut p, &state);
-        }
+        assert_eq!(state["done"], true);
         state = p
             .dispatch(&json!({"action":"watchdog","now":14,"ownerAlive":true}))
             .unwrap();
-        assert_eq!(state["effect"]["op"], "firewallDisable");
+        assert_eq!(state["effect"]["op"], "domainDNSRestore");
     }
     #[test]
     fn watchdog_requires_two_consecutive_verification_failures() {
@@ -489,6 +461,6 @@ mod tests {
         state = p
             .dispatch(&json!({"action":"watchdog","now":7,"ownerAlive":false}))
             .unwrap();
-        assert_eq!(state["effect"]["op"], "firewallDisable");
+        assert_eq!(state["effect"]["op"], "domainDNSRestore");
     }
 }

@@ -127,7 +127,7 @@ pub fn dispatch(r: &Value) -> Result<Value, String> {
                     if r["dns"] == true {
                         return c["chains"]
                             .as_array()
-                            .is_some_and(|a| a.contains(&json!("GLOBAL")))
+                            .is_some_and(|a| a.contains(&json!("GLOBAL")) && node.is_none_or(|n| a.contains(&json!(n))))
                             && ["1.1.1.1", "8.8.8.8"]
                                 .contains(&c["metadata"]["destinationIP"].as_str().unwrap_or(""))
                             && (c["metadata"]["destinationPort"].as_str() == Some("443")

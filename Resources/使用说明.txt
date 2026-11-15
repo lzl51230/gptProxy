@@ -9,7 +9,7 @@ ChatGPT Proxy 2.2.3
 分发 ZIP 不含 ChatGPT、ProxyBridge 或依赖安装包。修复需联网，使用配置的本地代理；失败可重试。修复不会自动启动或重启 GPT。
 
 启动器以当前用户托管 ProxyBridge 4.1.1 CLI；请勿同时打开 ProxyBridge 界面或另一个 CLI 实例。
-启动 GPT 时会为该应用设置 SOCKS5 启动参数，并为原生 Codex 子进程设置大小写 HTTP_PROXY、HTTPS_PROXY 和 ALL_PROXY，统一指向 socks5h://127.0.0.1:17890。启动前还会启用系统 DNS 保护：首次需管理员认证安装辅助服务，系统 DNS 和 Clash 普通解析均经 GLOBAL 节点请求 DoH。大小写 NO_PROXY 保留本机和 192.168.0.0/16 直连；不修改用户的 Codex 配置。
+启动 GPT 时会为该应用设置 SOCKS5 启动参数，并为原生 Codex 子进程设置大小写 HTTP_PROXY、HTTPS_PROXY 和 ALL_PROXY，统一指向 socks5h://127.0.0.1:17890。启动前还会启用系统 DNS 保护：首次需管理员认证安装辅助服务，系统解析器仅将 GPT 清单中的域名及子域名交给 Clash，经 GLOBAL 节点请求 DoH，其余域名沿用当前网络 DNS。大小写 NO_PROXY 保留本机和 192.168.0.0/16 直连；不修改用户的 Codex 配置。
 更新启动器后，请通过它重新启动 ChatGPT，以应用原生代理设置并解决 workspace routing discovery timed out。
 重启时最多等待旧 GPT 正常退出 15 秒，等待中可取消；超时或重新打开失败会恢复网络设置并提示手动退出后重试。
 关闭窗口继续驻留；正常退出先停止 CLI 再停止本地中继。查看代理日志可定位启动错误。

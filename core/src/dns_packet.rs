@@ -116,8 +116,8 @@ pub fn dispatch(r: &Value) -> Result<Value, String> {
             let tcp = r["tcp"] == true;
             let seconds = r["timeout"].as_u64().unwrap_or(3);
             if r["ipv4Only"] == true {
-                let q = query("one.one.one.one", 1, id)?;
-                let q6 = query("one.one.one.one", 28, id.wrapping_add(1))?;
+                let q = query("chatgpt.com", 1, id)?;
+                let q6 = query("chatgpt.com", 28, id.wrapping_add(1))?;
                 ipv4(
                     &exchange(&q, host, port, tcp, seconds)?,
                     &q,
@@ -125,7 +125,7 @@ pub fn dispatch(r: &Value) -> Result<Value, String> {
                     &q6,
                 )?;
             } else {
-                let q = query(&format!("gptproxy-{id}.example.com"), 1, id)?;
+                let q = query(&format!("gptproxy-{id}.chatgpt.com"), 1, id)?;
                 exchange(&q, host, port, tcp, seconds)?;
             }
             Ok(json!(true))

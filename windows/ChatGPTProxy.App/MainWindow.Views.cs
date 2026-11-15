@@ -87,7 +87,7 @@ internal sealed partial class MainWindow
         var active=state?["phase"]?.ToString()=="enabled";var ready=state?["ready"]?.GetValue<bool>()==true;
         SetCheck("后台保护组件",state==null?"○ 启用保护时授权":active?"✓ 已启用":"○ "+(state["detail"]?.ToString()??"未启用"));
         SetCheck("专用配置",state?["bridge"]?["ready"]?.GetValue<bool>()==true?"✓ 已应用":"○ 启用保护时应用");
-        SetCheck("Clash DNS",active?"✓ 保护期间已应用加密 DNS":"○ 启用保护时检查并应用");SetCheck("系统 DNS",active?"✓ DNS / IPv4 保护已启用":"○ "+(state?["detail"]?.ToString()??"未启用"));
+        SetCheck("Clash DNS",active?"✓ 保护期间已应用加密 DNS":"○ 启用保护时检查并应用");SetCheck("系统 DNS",active?"✓ GPT 域名 DNS 已保护":"○ "+(state?["detail"]?.ToString()??"未启用"));
         protectionReady=ready;activate.Content=ready?"ChatGPT 已通过保护启动":"保护并启动 / 重启 ChatGPT";activate.IsEnabled=!busy&&!ready;
     }
     private void UpdateMonitor(JsonNode? value)

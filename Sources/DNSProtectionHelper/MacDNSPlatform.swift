@@ -120,7 +120,7 @@ actor MacDNSPlatform {
         guard try !DNSProtectionConfiguration.runtimeIPv6(await client.request(socket: socket, path: "/configs")) else {
             throw MonitorError.message("Clash 的 IPv6 设置被覆盖，IPv4 保护已停止")
         }
-        try await Task.detached { try DNSPacket.probeIPv4Only(port: 53) }.value
+        try await Task.detached { try DNSPacket.probeIPv4Only(port: DNSProtectionConfiguration.clashDNSPort) }.value
     }
 
     func probe(port: UInt16, tcp: Bool = false) async throws {
@@ -142,32 +142,11 @@ actor MacDNSPlatform {
         }
     }
 
-    func clearExistingDNSStates() throws {
-        guard cgp_clear_dns_states() == 0 else {
-            throw MonitorError.message("无法精确清理已有明文 DNS 连接，已停止启用")
-        }
-    }
-
     func stop() async throws {
         while busy { try await Task.sleep(for: .milliseconds(100)) }
         busy = true
         defer { busy = false }
         try await restore(reason: "DNS 保护已关闭，原配置已恢复")
-    }
-
-    func assertSystemResolvers() async throws {
-        try SystemDNSSettings.assertLoopbackResolvers(await DNSSystemCommand.run("/usr/sbin/scutil", ["--dns"]))
-    }
-
-    func assertFirewall() async throws {
-        // A fresh query must reach our block rule and must not get a public DNS response.
-        let answered = await Task.detached { (try? DNSPacket.probe(port: 53, timeout: 1, host: "1.1.1.1")) != nil }.value
-        let labels = try await DNSSystemCommand.run("/sbin/pfctl", ["-a", DNSProtectionConfiguration.anchor, "-s", "labels"])
-        let blocked = labels.split(separator: "\n").contains { line in
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            return fields.first == "gptproxy-dns" && fields.count > 2 && (UInt64(fields[2]) ?? 0) > 0
-        }
-        guard !answered, blocked else { throw MonitorError.message("明文 DNS 阻断验证失败") }
     }
 
     func flushSystemCache() async {

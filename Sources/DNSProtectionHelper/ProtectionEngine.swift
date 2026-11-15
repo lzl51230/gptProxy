@@ -84,7 +84,7 @@ actor ProtectionEngine {
         }
         let phase = DNSProtectionStatus.Phase(rawValue: result["phase"] as? String ?? "failed") ?? .failed
         let errors = result["errors"] as? [String] ?? []
-        let detail = errors.isEmpty ? (phase == .enabled ? "DNS 已保护 · 本机代理使用 IPv4；明文 DNS 已阻断" : "DNS 保护已关闭，原配置已恢复") : errors.joined(separator: "；")
+        let detail = errors.isEmpty ? (phase == .enabled ? "GPT 域名 DNS 已保护" : "DNS 保护已关闭，原配置已恢复") : errors.joined(separator: "；")
         let sequence = result["stopSequence"] as? Int ?? 0
         if sequence != stopSequence {
             stopSequence = sequence
@@ -120,41 +120,53 @@ actor ProtectionEngine {
         let sameBoot = saved["bootSession"] as? String == (try DNSProtectionConfiguration.bootSession())
         switch effect["op"] as? String {
         case "preflight":
-            guard cgp_dns_firewall_supported() == 1, let request, let port = request.port, let socket = request.socket,
+            guard let request, let port = request.port, let socket = request.socket,
                   let yaml = request.yaml, let generation = request.sourceGeneration else { throw MonitorError.message("DNS 启用参数不完整或系统不受支持") }
             guard try await platform.generation() == generation else { throw MonitorError.message("Clash 配置已更改，请重试") }
             try await platform.validateSocket(socket)
             let snapshot = try await client.snapshot(socket: socket, port: port)
             let general = try await client.request(socket: socket, path: "/configs")
             try DNSProtectionConfiguration.assertDNSPortAvailable()
-            let services = try SystemDNSSettings.snapshots()
-            let rules = try await DNSSystemCommand.run("/sbin/pfctl", ["-sr"])
-            guard rules.contains("anchor \"com.apple/*\"") else { throw MonitorError.message("当前 PF 配置没有可用的系统 anchor") }
-            let pf = DNSFirewallState.isEnabled(try await DNSSystemCommand.run("/sbin/pfctl", ["-s","info"]))
             return ["platform":"macos", "ownerUID":ownerUID, "ownerPID":peerPID, "corePID":try await platform.corePID(socket: socket),
                     "socket":socket, "proxyPort":port, "source":yaml, "general":String(decoding:general,as:UTF8.self),
                     "sourceGeneration":generation, "bootstrapRepair":request.bootstrapRepair ?? [:],
                     "bootSession":try DNSProtectionConfiguration.bootSession(),
-                    "services":try JSONSerialization.jsonObject(with:JSONEncoder().encode(services)), "pfWasEnabled":pf,
+                    "dnsTransaction":UUID().uuidString,
                     "selection":try await client.selection(socket: socket),
                     "snapshot":["mode":snapshot.mode, "current":snapshot.current as Any? ?? NSNull()]] as [String:Any]
         case "persist": try persist(saved); return NSNull()
-        case "frontendStart": let _: UInt16 = try core.call(["op":"dnsStart", "listenPort":53, "upstreamPort":17853]); return NSNull()
         case "frontendStop": let _: Bool = try core.call(["op":"dnsStop"]); return NSNull()
         case "clashApply":
             try await client.reload(socket:socket,yaml:effect["protectedYAML"] as! String)
             try await client.restoreSelection(socket:socket,selection:saved["selection"] as? [String:String] ?? [:])
             try await client.closeAllConnections(socket:socket); try await client.flushDNS(socket:socket); return NSNull()
-        case "dnsReady": try await platform.waitForDNS(port:17853); try await platform.waitForDNS(port:53,tcp:true); return NSNull()
-        case "systemDNSApply": try SystemDNSSettings.apply(services,restoring:false); return NSNull()
+        case "dnsReady":
+            try await platform.waitForDNS(port:17853)
+            try await platform.waitForDNS(port:17853,tcp:true)
+            return NSNull()
+        case "domainDNSCheck", "domainDNSApply", "domainDNSRestore":
+            let rules = try DomainResolvers(journal: saved)
+            switch effect["op"] as? String {
+            case "domainDNSRestore": try rules.restore()
+            default:
+                try rules.checkFiles()
+                try rules.checkEffective(await DNSSystemCommand.run("/usr/sbin/scutil", ["--dns"]), installed: false)
+                if effect["op"] as? String == "domainDNSApply" {
+                    try rules.install()
+                    // configd loads /etc/resolver asynchronously.
+                    for attempt in 0..<12 {
+                        do {
+                            try rules.checkEffective(await DNSSystemCommand.run("/usr/sbin/scutil", ["--dns"]), installed: true)
+                            break
+                        } catch {
+                            if attempt == 11 { throw error }
+                            try await Task.sleep(for: .milliseconds(250))
+                        }
+                    }
+                }
+            }
+            return NSNull()
         case "systemDNSRestore": try SystemDNSSettings.apply(services,restoring:true); return NSNull()
-        case "firewallEnable":
-            let text = try await DNSSystemCommand.run("/sbin/pfctl",["-E"])
-            guard let range = text.range(of:#"Token\s*:\s*(\d+)"#,options:.regularExpression),let token = text[range].split(separator:":").last?.trimmingCharacters(in:.whitespacesAndNewlines) else { throw MonitorError.message("无法取得 PF 启用引用") }
-            // Persist the acquired native token before installing any filter.
-            var updated = saved; updated["firewallToken"] = token; try persist(updated)
-            _ = try await DNSSystemCommand.run("/sbin/pfctl",["-a",DNSProtectionConfiguration.anchor,"-f","-"],input:Data(DNSProtectionConfiguration.firewallRules.utf8))
-            try await platform.clearExistingDNSStates(); return ["firewallToken":token]
         case "firewallDisable":
             if sameBoot {
                 _ = try await DNSSystemCommand.run("/sbin/pfctl",["-a",DNSProtectionConfiguration.anchor,"-F","rules"])
@@ -170,13 +182,26 @@ actor ProtectionEngine {
             guard try await platform.generation() == saved["sourceGeneration"] as? String else { throw MonitorError.message("Clash 配置已重新加载") }
             let live = try await client.snapshot(socket:socket,port:(saved["proxyPort"] as? NSNumber)?.uint16Value ?? 0)
             guard live.mode == "global",let node = live.current, !["DIRECT","REJECT","PASS"].contains(node.uppercased()) else { throw MonitorError.message("Clash 已离开受保护的全局代理模式") }
-            if live.selectionSignature != selectionSignature {
+            let selectionChanged = live.selectionSignature != selectionSignature
+            if selectionChanged {
                 try await client.closeDNSConnections(socket:socket); try await client.flushDNS(socket:socket)
-                selectionSignature = live.selectionSignature
+                await platform.flushSystemCache()
             }
-            let additions = try SystemDNSSettings.snapshots().filter { current in !services.contains { $0.serviceID == current.serviceID } }
-            if !additions.isEmpty { return ["newServices":try JSONSerialization.jsonObject(with:JSONEncoder().encode(additions))] }
-            try await platform.assertSystemResolvers(); try await platform.assertFirewall(); try await platform.probe(port:53); try await platform.assertIPv4Policy(socket:socket)
+            let rules = try DomainResolvers(journal: saved)
+            try rules.verifyFiles()
+            try rules.checkEffective(await DNSSystemCommand.run("/usr/sbin/scutil", ["--dns"]), installed: true)
+            if selectionChanged || !status.isEnabled {
+                let answer = try await DNSSystemCommand.run("/usr/bin/dscacheutil", ["-q", "host", "-a", "name", "chatgpt.com."], timeout: 4)
+                guard answer.contains("ip_address:"), !answer.contains("ipv6_address:") else {
+                    throw MonitorError.message("系统 DNS 未返回 GPT 域名的 IPv4 地址")
+                }
+            }
+            try await platform.probe(port:17853)
+            try await platform.assertIPv4Policy(socket:socket)
+            guard try await client.hasDNSConnection(socket: socket, node: node) else {
+                throw MonitorError.message("未验证到当前节点的 GPT 加密 DNS 连接")
+            }
+            selectionSignature = live.selectionSignature
             return NSNull()
         case "clashRestorePrepare":
             let pid = (saved["corePID"] as? NSNumber)?.int32Value ?? 0

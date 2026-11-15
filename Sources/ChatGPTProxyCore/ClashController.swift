@@ -168,6 +168,10 @@ public struct ClashControllerClient: Sendable {
     }
     public func flushDNS(socket: String) async throws { _ = try await command(socket:socket,"flushDNS") }
     public func closeAllConnections(socket: String) async throws { _ = try await command(socket:socket,"closeAll") }
+    public func hasDNSConnection(socket: String, node: String) async throws -> Bool {
+        let ids = try await connectionIDs(socket: socket, node: node, dns: true)
+        return !ids.isEmpty
+    }
     public func closeDNSConnections(socket: String) async throws {
         for id in try await connectionIDs(socket:socket,dns:true) { try await close(socket:socket,id:id) }
     }

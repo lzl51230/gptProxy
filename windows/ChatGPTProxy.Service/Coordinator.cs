@@ -175,7 +175,7 @@ internal sealed class Coordinator : IAsyncDisposable
             case "preflight":
                 var adapter=clash??throw new IOException("Clash unavailable");
                 var general=await adapter.Command("configs");sourceGeneration=adapter.Generation();
-                return new JsonObject{["platform"]="windows",["ownerSid"]=ownerSid,["pipe"]=adapter.Pipe,["root"]=adapter.Root,["corePID"]=adapter.Pid,["coreStartTicks"]=adapter.StartTicks,["sourceGeneration"]=sourceGeneration,["source"]=adapter.Source(),["general"]=general!.ToJsonString(),["snapshot"]=await adapter.Snapshot(),["selection"]=await adapter.Selections(),["services"]=await SystemAdapters.DnsSnapshot()};
+                return new JsonObject{["platform"]="windows",["ownerSid"]=ownerSid,["pipe"]=adapter.Pipe,["root"]=adapter.Root,["corePID"]=adapter.Pid,["coreStartTicks"]=adapter.StartTicks,["sourceGeneration"]=sourceGeneration,["source"]=adapter.Source(),["general"]=general!.ToJsonString(),["snapshot"]=await adapter.Snapshot(),["selection"]=await adapter.Selections(),["dnsTransaction"]=Guid.NewGuid().ToString("D")};
             case "persist":
                 var temporary=journalPath+".tmp";
                 var bytes=System.Text.Encoding.UTF8.GetBytes(journal!.ToJsonString());
@@ -191,9 +191,9 @@ internal sealed class Coordinator : IAsyncDisposable
                 Exception? failure=null;
                 for(int attempt=0;attempt<4;attempt++){try{core.Call(new{op="dnsProbe",port=17853,timeout=1});core.Call(new{op="dnsProbe",port=53,tcp=true,timeout=1});return null;}catch(Exception e){failure=e;await Task.Delay(250);}}
                 throw failure!;
-            case "systemDNSApply": await SystemAdapters.DnsApply(journal!["services"]!.AsArray(),false);return null;
-            case "systemDNSRestore": await SystemAdapters.DnsApply(journal!["services"]!.AsArray(),true);return null;
-            case "firewallEnable": core.Call(new{op="firewallStart"});return null;
+            case "domainDNSCheck": case "domainDNSApply": case "domainDNSRestore":
+                await SystemAdapters.DomainDns(effect["op"]!.GetValue<string>(), journal!); return null;
+            case "systemDNSRestore": await SystemAdapters.RestoreLegacyDns(journal!["services"]!.AsArray());return null;
             case "firewallDisable": core.Call(new{op="firewallStop"});return null;
             case "cacheFlush": await SystemAdapters.FlushDns();return null;
             case "verify":
@@ -202,16 +202,23 @@ internal sealed class Coordinator : IAsyncDisposable
                 if(snapshot["mode"]?.GetValue<string>()!="global"||snapshot["current"]?.GetValue<string>() is null or "DIRECT" or "REJECT" or "PASS")throw new IOException("Clash 已离开全局代理模式");
                 if((await clash.Command("configs"))?["ipv6"]?.GetValue<bool>()!=false)throw new IOException("Clash IPv4 策略被覆盖");
                 var selection=snapshot["selection"]?.ToJsonString()??"";
-                if(selection!=selectionSignature){
+                bool selectionChanged=selection!=selectionSignature;
+                if(selectionChanged){
                     foreach(var id in await clash.ConnectionIds(dns:true))await clash.Command("close",id:id!.GetValue<string>());
-                    await clash.Command("flushDNS");selectionSignature=selection;
+                    await clash.Command("flushDNS");await SystemAdapters.FlushDns();
                 }
-                var savedIds=journal!["services"]!.AsArray().Select(s=>s!["id"]!.GetValue<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var additions=new JsonArray((await SystemAdapters.DnsSnapshot()).Where(s=>!savedIds.Contains(s!["id"]!.GetValue<string>())).Select(s=>s!.DeepClone()).ToArray());
-                if(additions.Count>0)return new JsonObject{["newServices"]=additions};
-                await SystemAdapters.AssertDns();core.Call(new{op="dnsProbe",port=53,ipv4Only=true,timeout=2});
-                bool answered=false;try{core.Call(new{op="dnsProbe",port=53,host="1.1.1.1",timeout=1});answered=true;}catch{}
-                if(answered)throw new IOException("明文 DNS 阻断验证失败");return null;
+                await SystemAdapters.DomainDns("verify", journal!);
+                if (selectionChanged || phase != "enabled") {
+                    var addresses = await System.Net.Dns.GetHostAddressesAsync("chatgpt.com.").WaitAsync(TimeSpan.FromSeconds(4));
+                    if (addresses.Length == 0 || addresses.Any(ip => ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork))
+                        throw new IOException("系统 DNS 未返回 GPT 域名的 IPv4 地址");
+                }
+                core.Call(new{op="dnsProbe",port=53,timeout=2});
+                core.Call(new{op="dnsProbe",port=53,ipv4Only=true,timeout=2});
+                if ((await clash.ConnectionIds(node:snapshot["current"]!.GetValue<string>(), dns:true)).Count == 0)
+                    throw new IOException("未验证到当前节点的 GPT 加密 DNS 连接");
+                selectionSignature=selection;
+                return null;
             case "clashRestorePrepare":
                 if(clash==null) {
                     var pid=journal!["corePID"]!.GetValue<int>();

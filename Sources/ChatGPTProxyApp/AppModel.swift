@@ -210,7 +210,7 @@ final class AppModel: ObservableObject {
         } else if !extensionEnabled {
             phase = .failed("ProxyBridge 网络扩展尚未启用，请在系统设置中批准。")
         } else if dns.status.isEnabled && cli.isReady {
-            phase = proxyReachable ? .ready : .waiting("DNS 已保护，正在恢复代理连接…")
+            phase = proxyReachable ? .ready : .waiting("GPT 域名 DNS 已保护，正在恢复代理连接…")
         } else {
             let reason = recovery.lastError ?? dns.status.detail
             let delay = recovery.retrySeconds > 0 ? "（\(recovery.retrySeconds) 秒后重试）" : ""

@@ -38,11 +38,11 @@ make verify
 
 ## 系统 DNS 保护
 
-ChatGPT Proxy 驻留期间自动维护 DNS / IPv4 保护，无论 GPT 是否运行。后台恢复和单独启用只重建网络连接，不重启 GPT。主按钮在 GPT 运行时显示“ChatGPT 已运行”并置灰；GPT 退出后恢复为“启动 ChatGPT”。主窗口通过进程扫描、应用通知和每 2 秒复核持续显示 GPT 是否运行，关闭 GPT 窗口不会被当作进程退出。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。2.3.3 使用辅助服务协议 3，首次启用会先恢复旧事务再升级服务。
+ChatGPT Proxy 驻留期间自动维护 DNS / IPv4 保护，无论 GPT 是否运行。后台恢复和单独启用只重建网络连接，不重启 GPT。主按钮在 GPT 运行时显示“ChatGPT 已运行”并置灰；GPT 退出后恢复为“启动 ChatGPT”。主窗口通过进程扫描、应用通知和每 2 秒复核持续显示 GPT 是否运行，关闭 GPT 窗口不会被当作进程退出。首次启用通过 macOS 管理员认证安装 root 辅助服务；无需自定义 Network Extension 签名。登录驻留不自动申请管理员认证。首次启用域名分流时会先恢复旧事务，再升级到辅助服务协议 5。
 
 要求官方 ProxyBridge 4.1.1，内置配置关闭其 DNS 扩展，避免它接管并终止 TCP DNS 连接。TCP/UDP 流量规则保留；域名解析由本项目和 Clash 负责。4.1.0 用户需通过“修复”升级。
 
-仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。普通系统解析经 `127.0.0.1/::1:53` 转入 Clash 的 `127.0.0.1:17853`，再通过当前 `GLOBAL` 节点请求 Cloudflare 和 Google DoH。GPT 通过 SOCKS5 提交的域名也使用该配置。临时采用 `redir-host` 返回真实地址。
+仅支持匹配到唯一 Clash Party 实例、全局模式、实际代理节点且 TUN 关闭的情况。系统解析器只把 [GPT 域名清单](core/resources/gpt-dns-domains.txt) 中的域名及子域名交给 Clash。清单来自 [OpenAI 网络说明](https://help.openai.com/en/articles/9247338)，包含第三方登录、验证和资源主机。macOS 为每个后缀安装临时的 `/etc/resolver` 文件，指向 `127.0.0.1:17853`。Windows 使用 NRPT 规则指向 `127.0.0.1:53`，再转入同一 Clash 端口。匹配的查询通过当前 `GLOBAL` 节点请求 Cloudflare 或 Google DoH。其他系统查询继续使用当前网络的 DNS，包括内网解析和 AAAA。
 
 主窗口的「Clash DNS」会在启动前检查引导和节点解析配置。两组 DNS 都须独立使用 DoH 或 DoT，引导服务器须使用 IPv4 字面地址。如果显示「正在使用明文 DNS」，点击右侧「修复」。启动器会记住选择，优先使用 Clash Party 已保存的合格加密解析地址，缺少时使用内置 IPv4 DoH。驻留维护或手动启用保护时应用临时配置，暂停或退出时恢复。订阅文件和 Clash Party 的「DNS 覆写」开关保持原值。
 
@@ -50,9 +50,9 @@ ChatGPT Proxy 驻留期间自动维护 DNS / IPv4 保护，无论 GPT 是否运�
 
 此策略限制本机到节点的地址族，不控制远端节点到网站的地址族。GPT 原生 IPv6 TCP 被阻断；UDP 全部经代理，节点连接使用 IPv4。ProxyBridge 4.1.1 对 UDP 只按进程匹配，不能用 IPv6 `BOTH + BLOCK` 规则，否则会误封 IPv4 UDP 和语音流量。macOS 的 IPv6 及 `::1` 本地 DNS 服务保留。
 
-保护期间，所有已启用物理网络服务的 DNS 指向本地服务；PF 专用 anchor 阻断非环回接口上的 IPv4/IPv6 TCP/UDP 53，并精确清理既有 DNS 状态。其他 PF 规则、mDNS、其他端口保持原样。应用自带 DoH/DoT 不属于明文 53 阻断范围；检测到 VPN 或其他系统 DNS 覆盖时停止保护。
+域名分流适用于使用系统解析器的所有应用。使用自带 DoH/DoT 的应用及显式 SOCKS 远端解析继续使用各自的解析路径。已有的企业、VPN 或本地域名规则发生冲突时，启动器会显示受影响的域名并回滚。
 
-辅助服务独立于窗口进程检查链路、IPv4 策略、网络服务和节点变化。连续两次检查失败、Clash 配置重新加载、启动器失去响应或退出时，自动还原 DNS、Clash 配置和自身 PF 规则；恢复时保留用户随后手动修改的 DNS、节点和模式，并还原本次临时覆盖的 IPv6 开关。恢复时保留用户主动开启 IPv6 或加载的新配置；后续自动重新保护仍会临时应用 IPv4 策略，若需保留未保护状态应主动暂停保护。恢复后优先使用原 DNS 和 IPv6 保持联网，此时不保证受保护。只要启动器仍驻留且没有主动暂停，就按 2、5、10、30、60 秒封顶退避重试；连续两次前置检查成功后重新开启。心跳在独立后台任务中每 2 秒发送，不受界面或节点监控暂停影响。“暂停保护并恢复原 DNS”会保存暂停选择，直到主动启用。缺少辅助服务授权或网络扩展批准时显示具体待办，不反复弹出授权窗口。
+辅助服务持续检查生效的域名规则、Clash 节点和加密 DNS 链路。暂停、退出、启动器失去响应或链路持续失败时，按恢复日志撤销本次域名规则、还原 Clash 临时配置。恢复时保留用户后来修改的规则、节点和模式。启动器驻留且未暂停时会自动重试；主动暂停可保留未保护状态。升级遇到旧版恢复日志时仍会先还原网卡 DNS 和旧防火墙设置。
 
 恢复记录位于 `/Library/Application Support/ChatGPT Proxy DNS/recovery-v3.json`（升级时仍读取旧版 `recovery.json`），仅 root 可读，可能包含原 Clash 配置。正常恢复成功后删除；崩溃或重启后优先恢复未完成的事务。辅助服务只接受安装用户或 root 的固定控制命令，不记录查询域名及订阅凭据。协议 3 状态新增可选的停保原因、时间及恢复结果，旧客户端仍可读取；停保原因不会因成功恢复而丢失。启动器的 `~/Library/Logs/ChatGPT Proxy/protection.jsonl` 记录状态转换并按 5 MB 轮转，`runtime-status.json` 保存最近一次状态快照。
 
@@ -68,7 +68,7 @@ sudo /Library/PrivilegedHelperTools/local.alex.chatgpt-proxy.dns --restore
 sudo /Library/PrivilegedHelperTools/local.alex.chatgpt-proxy.dns --uninstall
 ```
 
-PF 状态清理目前限定已审核的 Darwin 23–25（macOS 14、15、26）ABI；遇到其他系统版本拒绝启用，避免误操作防火墙。
+域名分流的系统级验收使用临时的 `.test` 域名和两个独立的 DNS 应答服务。Windows 在管理员测试终端运行 `python scripts/qa-split-dns.py`。macOS 在有管理员权限的测试环境中设置 `GPTPROXY_SYSTEM_DNS_QA=1`，运行 `swift test --filter DomainResolverTests`；测试需能使用 17853、17854 两个端口。下列 2.3.x 验收记录对应旧版全机 DNS 保护。
 
 2026-11-05 在 macOS 26.6、Clash v1.19.24 和 ProxyBridge 4.1.1 上完成 2.3.0 本机联调：IPv4/IPv6 环回的 TCP/UDP DNS 均可用，外部 TCP/UDP 53 查询被阻断，Clash 连接链确认两家 DoH 均经当前 GLOBAL 节点。一键恢复及正常退出均还原全部网络服务 DNS；强制终止启动器后，独立服务约 4 秒内恢复。每次恢复后均核对系统解析器、各服务 DNS 与原始 Clash 文件，结果与修改前一致。自动化测试共 117 项通过，包含后台定时回调与恢复失败注入测试。其他系统版本仍需各自完成联调验收。
 

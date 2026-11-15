@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public enum DNSProtectionConfiguration {
-    public static let version = "4"
+    public static let version = "5"
     public static let maximumConfigurationSize = 32 * 1024 * 1024
     // Recovery journals include both source and runtime YAML, JSON-escaped.
     public static let maximumRecoverySize = 256 * 1024 * 1024
