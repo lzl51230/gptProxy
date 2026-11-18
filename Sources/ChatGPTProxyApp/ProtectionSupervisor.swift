@@ -2,7 +2,9 @@ import Foundation
 
 @MainActor
 final class ProtectionSupervisor {
-    private(set) var lastError: String?
+    private var lastFailure: Error?
+    var lastError: String? { lastFailure?.localizedDescription }
+    var authorizationIssue: DNSHelperAuthorizationError? { lastFailure as? DNSHelperAuthorizationError }
     private(set) var retryAt: TimeInterval = 0
     private(set) var failures = 0
     private(set) var healthyChecks = 0
@@ -16,7 +18,7 @@ final class ProtectionSupervisor {
 
     func reset() {
         revision += 1
-        lastError = nil
+        lastFailure = nil
         retryAt = 0
         failures = 0
         healthyChecks = 0
@@ -35,6 +37,7 @@ final class ProtectionSupervisor {
         do {
             try await prepare()
             guard generation == revision, !Task.isCancelled else { return }
+            if authorizationIssue != nil { lastFailure = nil }
             healthyChecks += 1
             if healthyChecks >= 2 {
                 try await activate()
@@ -43,11 +46,18 @@ final class ProtectionSupervisor {
             }
         } catch {
             guard generation == revision, !Task.isCancelled else { return }
-            healthyChecks = 0
-            lastError = error.localizedDescription
-            let delays: [TimeInterval] = [2, 5, 10, 30, 60]
-            retryAt = now() + delays[min(failures, delays.count - 1)]
-            failures += 1
+            recordFailure(error)
         }
+    }
+
+    func recordFailure(_ error: Error) {
+        healthyChecks = 0
+        // A silent recheck cannot change the outcome of the last authorization dialog.
+        if authorizationIssue != .cancelled || (error as? DNSHelperAuthorizationError) != .required {
+            lastFailure = error
+        }
+        let delays: [TimeInterval] = [2, 5, 10, 30, 60]
+        retryAt = now() + delays[min(failures, delays.count - 1)]
+        failures += 1
     }
 }

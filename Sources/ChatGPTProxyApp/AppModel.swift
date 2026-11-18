@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
         case checking
         case ready
         case waiting(String)
+        case needsDNSAuthorization(DNSHelperAuthorizationError)
         case paused
         case launching
         case configuringProfile
@@ -27,6 +28,7 @@ final class AppModel: ObservableObject {
             case .ready:
                 "代理与 DNS 保护正常"
             case let .waiting(message): message
+            case let .needsDNSAuthorization(issue): issue.localizedDescription
             case .paused: "DNS 保护已暂停，使用原 DNS"
             case .launching:
                 "正在启动 ChatGPT..."
@@ -211,6 +213,10 @@ final class AppModel: ObservableObject {
             phase = .failed("ProxyBridge 网络扩展尚未启用，请在系统设置中批准。")
         } else if dns.status.isEnabled && cli.isReady {
             phase = proxyReachable ? .ready : .waiting("GPT 域名 DNS 已保护，正在恢复代理连接…")
+        } else if let issue = recovery.authorizationIssue {
+            phase = .needsDNSAuthorization(issue)
+        } else if recovery.lastError == nil && dns.status.version != DNSProtectionConfiguration.version {
+            phase = .needsDNSAuthorization(.required)
         } else {
             let reason = recovery.lastError ?? dns.status.detail
             let delay = recovery.retrySeconds > 0 ? "（\(recovery.retrySeconds) 秒后重试）" : ""
@@ -401,7 +407,10 @@ final class AppModel: ObservableObject {
             try checkOperationCancellation()
             try await activateProtection(launchGPT: false)
             phase = .ready
-        } catch { phase = .failed(error.localizedDescription) }
+        } catch {
+            recovery.recordFailure(error)
+            phase = recovery.authorizationIssue.map(Phase.needsDNSAuthorization) ?? .failed(error.localizedDescription)
+        }
     }
 
     func restoreDNSProtection() async {

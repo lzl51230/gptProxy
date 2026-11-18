@@ -34,6 +34,39 @@ final class ProtectionSupervisorTests: XCTestCase {
         XCTAssertTrue(enabled)
     }
 
+    func testAuthorizationRemainsActionableDuringBackoffAndAfterCancellation() async {
+        var time: TimeInterval = 0
+        let supervisor = ProtectionSupervisor(now: { time })
+        func silentCheck() async {
+            await supervisor.tick(enabled: false, paused: false, prepare: {
+                throw DNSHelperAuthorizationError.required
+            }, activate: { XCTFail("Missing helper") })
+        }
+
+        await silentCheck()
+        XCTAssertEqual(supervisor.authorizationIssue, .required)
+        XCTAssertGreaterThan(supervisor.retrySeconds, 0)
+        supervisor.reset() // A manual attempt bypasses the retry delay.
+        supervisor.recordFailure(DNSHelperAuthorizationError.cancelled)
+        time += Double(supervisor.retrySeconds)
+        await silentCheck()
+        XCTAssertEqual(supervisor.authorizationIssue, .cancelled)
+        time += Double(supervisor.retrySeconds)
+        await supervisor.tick(enabled: false, paused: false, prepare: {}, activate: {})
+        XCTAssertNil(supervisor.authorizationIssue)
+    }
+
+    func testOtherFailureAndPauseClearAuthorizationAction() async {
+        let supervisor = ProtectionSupervisor()
+        supervisor.recordFailure(DNSHelperAuthorizationError.required)
+        supervisor.recordFailure(Failure.offline)
+        XCTAssertNil(supervisor.authorizationIssue)
+        XCTAssertEqual(supervisor.lastError, "fixture offline")
+        supervisor.recordFailure(DNSHelperAuthorizationError.required)
+        await supervisor.tick(enabled: false, paused: true, prepare: {}, activate: {})
+        XCTAssertNil(supervisor.authorizationIssue)
+    }
+
     func testBackoffIsBoundedAndPauseDoesNotReactivate() async {
         var time: TimeInterval = 0
         let supervisor = ProtectionSupervisor(now: { time })

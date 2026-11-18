@@ -4,6 +4,17 @@ import CryptoKit
 import Darwin
 import ChatGPTProxyCore
 
+enum DNSHelperAuthorizationError: LocalizedError {
+    case required, cancelled
+
+    var errorDescription: String? {
+        switch self {
+        case .required: "DNS 辅助服务需要安装或更新，完成授权后即可恢复保护"
+        case .cancelled: "已取消授权，可重新授权以恢复 DNS 保护"
+        }
+    }
+}
+
 enum ClashDNSCheck: Equatable {
     case unchecked, ready, prepared
     case needsRepair(String), unavailable(String)
@@ -125,8 +136,11 @@ final class DNSProtectionController: ObservableObject {
 
     private func accept(_ response: DNSProtectionStatus, generation: Int) {
         guard generation == observationGeneration, !mutating else { return }
-        let next = response.isEnabled && response.version != DNSProtectionConfiguration.version
-            ? DNSProtectionStatus(phase: .failed, detail: "辅助服务需要升级，请重新启用 DNS / IPv4 保护") : response
+        var next = response
+        if response.isEnabled && response.version != DNSProtectionConfiguration.version {
+            next.phase = .failed
+            next.detail = DNSHelperAuthorizationError.required.localizedDescription
+        }
         if next != status { status = next }
     }
 
@@ -230,7 +244,7 @@ final class DNSProtectionController: ObservableObject {
            response.version == DNSProtectionConfiguration.version { return }
 
         guard allowAuthorization else {
-            throw MonitorError.message("DNS 辅助服务需要安装或更新，请点击「启用 DNS / IPv4 保护」完成系统授权")
+            throw DNSHelperAuthorizationError.required
         }
 
         // Administrator authorization installs a root-owned copy. The daemon never
@@ -255,11 +269,18 @@ final class DNSProtectionController: ObservableObject {
           set helperTarget to quoted form of item 3 of argv
           set plistTarget to quoted form of item 4 of argv
           set serviceLabel to quoted form of item 5 of argv
-          do shell script "set -eu; if test -x " & helperTarget & "; then " & helperTarget & " --restore; fi; /bin/launchctl bootout system/" & serviceLabel & " >/dev/null 2>&1 || true; /bin/mkdir -p /Library/PrivilegedHelperTools; /usr/bin/install -o root -g wheel -m 755 " & helperSource & " " & helperTarget & "; /usr/bin/install -o root -g wheel -m 644 " & plistSource & " " & plistTarget & "; /bin/launchctl bootstrap system " & plistTarget with administrator privileges
+          try
+            do shell script "set -eu; if test -x " & helperTarget & "; then " & helperTarget & " --restore; fi; /bin/launchctl bootout system/" & serviceLabel & " >/dev/null 2>&1 || true; /bin/mkdir -p /Library/PrivilegedHelperTools; /usr/bin/install -o root -g wheel -m 755 " & helperSource & " " & helperTarget & "; /usr/bin/install -o root -g wheel -m 644 " & plistSource & " " & plistTarget & "; /bin/launchctl bootstrap system " & plistTarget with administrator privileges
+          on error number -128
+            return "authorization-cancelled"
+          end try
         end run
         """
-        _ = try await DNSSystemCommand.run("/usr/bin/osascript", ["-e", script, bundled.path, plist.path,
+        let result = try await DNSSystemCommand.run("/usr/bin/osascript", ["-e", script, bundled.path, plist.path,
             installed.path, "/Library/LaunchDaemons/\(label).plist", label], timeout: 300)
+        if result.trimmingCharacters(in: .whitespacesAndNewlines) == "authorization-cancelled" {
+            throw DNSHelperAuthorizationError.cancelled
+        }
         for _ in 0..<20 {
             if let response = try? await DNSProtectionIPC.request(.init(command: .status)),
                response.version == DNSProtectionConfiguration.version { return }

@@ -55,6 +55,8 @@ final class DNSProtectionControllerTests: XCTestCase {
         })
         await controller.refresh()
         XCTAssertFalse(controller.status.isEnabled)
+        XCTAssertEqual(controller.status.version, "3")
+        XCTAssertEqual(controller.status.detail, DNSHelperAuthorizationError.required.localizedDescription)
     }
 
     func testVersionThreeStatusStillDecodesWithoutDiagnosticFields() throws {

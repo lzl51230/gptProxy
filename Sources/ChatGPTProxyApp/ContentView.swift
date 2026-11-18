@@ -53,6 +53,13 @@ struct ContentView: View {
                 Text(model.phase.message)
                     .font(.callout)
                     .foregroundStyle(statusColor)
+                if case .needsDNSAuthorization = model.phase {
+                    Button("授权并启用 DNS 保护") {
+                        Task { await model.enableDNSProtection() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy)
+                }
             }
             Spacer()
             SettingsLink { Image(systemName: "gearshape") }
@@ -235,7 +242,7 @@ struct ContentView: View {
 
     private var statusColor: Color {
         switch model.phase {
-        case .waiting, .paused: .orange
+        case .waiting, .paused, .needsDNSAuthorization: .orange
         case .ready:
             .green
         case .failed:
