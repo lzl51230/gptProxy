@@ -53,7 +53,7 @@ struct ContentView: View {
                 Text(model.phase.message)
                     .font(.callout)
                     .foregroundStyle(statusColor)
-                if case .needsDNSAuthorization = model.phase {
+                if model.offersDNSAuthorization {
                     Button("授权并启用 DNS 保护") {
                         Task { await model.enableDNSProtection() }
                     }

@@ -4,8 +4,13 @@ import XCTest
 @MainActor
 final class ProtectionSupervisorTests: XCTestCase {
     private enum Failure: LocalizedError {
-        case offline
-        var errorDescription: String? { "fixture offline" }
+        case offline, dnsOverride
+        var errorDescription: String? {
+            switch self {
+            case .offline: "fixture offline"
+            case .dnsOverride: "verify: 检测到 VPN 或其他 DNS 配置覆盖，已停止 DNS 保护"
+            }
+        }
     }
 
     func testTemporaryFailureRetriesAndClearsErrorOnlyAfterProtectionReturns() async {
@@ -67,12 +72,51 @@ final class ProtectionSupervisorTests: XCTestCase {
         XCTAssertNil(supervisor.authorizationIssue)
     }
 
-    func testBackoffIsBoundedAndPauseDoesNotReactivate() async {
+    func testThirdVerifyFailureRollsBackAndStopsRecovery() async {
+        var time: TimeInterval = 0
+        var prepared = 0, activated = 0, restored = 0
+        let supervisor = ProtectionSupervisor(now: { time })
+        func tick() async {
+            await supervisor.tick(enabled: false, paused: false, prepare: { prepared += 1 }, activate: {
+                try await ProtectionActivation.run(launchGPT: false, isGPTRunning: { false }, enable: {
+                    activated += 1
+                    throw Failure.dnsOverride
+                }, restartGPT: { XCTFail("Unexpected launch") }, restore: { restored += 1 }, checkCancellation: {})
+            })
+        }
+
+        for delay in [2, 5, 0] {
+            await tick()
+            await tick()
+            XCTAssertEqual(supervisor.retrySeconds, delay)
+            time += Double(delay)
+        }
+        supervisor.recheckAfterWake()
+        XCTAssertFalse(supervisor.retryDue)
+        XCTAssertEqual(supervisor.stoppedMessage, "verify: 检测到 VPN 或其他 DNS 配置覆盖，已停止 DNS 保护（同一错误已连续出现 3 次，已停止自动重试）")
+        XCTAssertTrue(ProtectionSupervisor(now: { time }).retryDue)
+        time += 3600
+        await tick()
+        await tick()
+        XCTAssertEqual(prepared, 6)
+        XCTAssertEqual(activated, 3)
+        XCTAssertEqual(restored, 3)
+        XCTAssertEqual(supervisor.lastError, Failure.dnsOverride.localizedDescription)
+
+        supervisor.reset() // Manual enable starts a new cycle.
+        await tick()
+        await tick()
+        XCTAssertEqual(activated, 4)
+        XCTAssertEqual(supervisor.retrySeconds, 2)
+    }
+
+    func testDifferentFailuresDoNotAccumulateTowardSameErrorLimit() async {
         var time: TimeInterval = 0
         let supervisor = ProtectionSupervisor(now: { time })
-        for delay in [2, 5, 10, 30, 60, 60] {
+        let errors: [Failure] = [.offline, .offline, .dnsOverride, .offline, .offline, .offline]
+        for (error, delay) in zip(errors, [2, 5, 10, 30, 60, 0]) {
             await supervisor.tick(enabled: false, paused: false,
-                                  prepare: { throw Failure.offline }, activate: { XCTFail("offline") })
+                                  prepare: { throw error }, activate: { XCTFail("unavailable") })
             XCTAssertEqual(supervisor.retrySeconds, delay)
             time += Double(delay)
         }

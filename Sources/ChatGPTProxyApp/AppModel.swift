@@ -150,7 +150,7 @@ final class AppModel: ObservableObject {
     }
 
     func resumeAfterWake() {
-        recovery.reset()
+        recovery.recheckAfterWake()
         nextInstallationCheck = 0
         gpt.refresh()
         if let port = UInt16(exactly: proxyPort), port > 0 { monitor.start(port: port) }
@@ -166,16 +166,16 @@ final class AppModel: ObservableObject {
         }
         guard !shuttingDown, activeOperation == nil else { return }
         let enabled = dns.status.isEnabled && cli.isReady && extensionEnabled && !pendingPortChange
-        if protectionPaused && (dns.status.phase != .disabled || !cli.isReady || pendingPortChange) && recovery.retrySeconds == 0 {
+        if protectionPaused && (dns.status.phase != .disabled || !cli.isReady || pendingPortChange) && recovery.retryDue {
             guard let operation = beginOperation(phase: .configuringProfile) else { return }
-            await recovery.tick(enabled: false, paused: false, prepare: {
+            await recovery.tick(enabled: false, paused: false, limitRepeatedFailures: false, prepare: {
                 if self.dns.status.phase != .disabled { try await self.dns.restore() }
                 try self.checkOperationCancellation()
                 guard self.extensionEnabled else { throw AppError.extensionDisabled }
                 if !self.cli.isReady || self.pendingPortChange { try await self.configureBundledProxyBridgeProfile() }
             }, activate: {})
             endOperation(operation)
-        } else if !protectionPaused && !enabled && recovery.retrySeconds == 0 {
+        } else if !protectionPaused && !enabled && recovery.retryDue {
             guard let operation = beginOperation(phase: .checking) else { return }
             await recovery.tick(enabled: false, paused: false, prepare: {
                 try self.checkOperationCancellation()
@@ -207,6 +207,8 @@ final class AppModel: ObservableObject {
         if protectionPaused {
             phase = dns.status.phase == .disabled ? .paused
                 : .failed("暂停保护尚未完成：\(dns.status.detail)")
+        } else if let message = recovery.stoppedMessage {
+            phase = .failed(message)
         } else if !proxyBridgeInstalled {
             phase = .failed("ProxyBridge 需要修复：\(proxyBridgeStatus.detail)")
         } else if !extensionEnabled {
@@ -227,6 +229,11 @@ final class AppModel: ObservableObject {
         ProtectionDiagnostics.record(phase: phase.message, dns: dns.status,
             pids: gpt.processIdentifiers, paused: protectionPaused, retry: recovery.failures,
             proxyReady: proxyReachable, cliReady: cli.isReady)
+    }
+
+    var offersDNSAuthorization: Bool {
+        if case .needsDNSAuthorization = phase { return true }
+        return recovery.retriesStopped && recovery.authorizationIssue != nil && !protectionPaused
     }
 
     var isBusy: Bool {
